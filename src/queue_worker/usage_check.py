@@ -58,8 +58,8 @@ class UsageCheckResult:
                                          # between_sessions, cloudflare_blocked,
                                          # rate_limited, network_error,
                                          # http_error, bad_response,
-                                         # org_resolve_failed, parse_failed
-    backend: Optional[str] = 'http'      # always 'http' (kept for JSON shape compat)
+                                         # org_resolve_failed, parse_failed,
+                                         # multi_org_no_pin
 
 
 def decide(pct: Optional[int], reset_minutes: Optional[int]) -> str:

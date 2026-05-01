@@ -174,9 +174,8 @@ def _extract_user_text(obj: dict) -> Optional[str]:
     return text
 
 
-def _trim(text: str, n: int = _MSG_CHARS) -> str:
-    s = ' '.join(text.split())
-    return s[:n]
+def _trim(text: str) -> str:
+    return ' '.join(text.split())[:_MSG_CHARS]
 
 
 def _scan_for_user_messages(lines: list[str]) -> tuple[Optional[str], Optional[str], int]:

@@ -428,7 +428,6 @@ def fetch_usage_http(log_fn=lambda _msg: None):
                 reset_str=reset_str,
                 status=status,
                 finished_at=time.time(),
-                backend='http',
             )
 
         except SessionKeyInvalid:
