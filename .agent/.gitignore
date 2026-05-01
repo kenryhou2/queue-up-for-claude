@@ -1,0 +1,4 @@
+proposed/*
+checkpoints/*
+dry-run/*
+!*/.gitkeep
