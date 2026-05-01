@@ -97,6 +97,8 @@ Usage is read by calling the same `/api/organizations/{uuid}/usage` endpoint the
 
 ```
 queue-up-for-claude/
+├── .agent/                 ← this repo's own queue-worker context (worked example —
+│                            run `queue-worker compile .` to see the CLAUDE.md it produces)
 ├── queue-worker            ← bash wrapper for the CLI
 ├── pyproject.toml          ← package metadata + entry points
 ├── config/profiles.yaml    ← capability level definitions

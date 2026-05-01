@@ -2,6 +2,8 @@
 
 To make a project compatible with queue-up-for-claude, it needs a `.agent/` directory with files that tell the agent who it is, what the project is, and how to work. The runner injects this content into a generated `CLAUDE.md` before each task.
 
+> **Worked example:** this repo eats its own dog food. The populated [`.agent/`](../.agent/) at the repo root is a real, non-template version of everything described below. Run `queue-worker compile .` from the repo root to see the `CLAUDE.md` it produces — the abstracts surface as one-liners, capabilities resolve into ALLOWED / NOT ALLOWED sections, and recent briefings get pulled in. Read those files alongside this doc.
+
 ## Scaffold
 
 ```bash
