@@ -1,15 +1,8 @@
 # Usage checking
 
-queue-up-for-claude has two backends for reading your Claude.ai plan usage:
-
-- **HTTP** (preferred): calls the same `/api/organizations/{uuid}/usage` endpoint the claude.ai UI uses, authenticated with your `sessionKey` cookie. Fast, stateless, no browser required for the check itself.
-- **Playwright** (fallback): scrapes the rendered `claude.ai/settings/usage` page through a long-running Chrome instance over CDP. Slower, heavier, but resilient to API shape changes and works without needing a sessionKey.
-
-The dispatcher picks one based on `QUEUE_WORKER_USAGE_BACKEND` and falls back gracefully (see [Recovery flow](#recovery-flow)).
+queue-up-for-claude reads your Claude.ai plan usage by calling the same `/api/organizations/{uuid}/usage` endpoint the claude.ai UI uses, authenticated with your `sessionKey` cookie. No browser is launched. There is no scraper fallback.
 
 ## Setup: sessionKey cookie
-
-Required for the HTTP backend.
 
 **Chrome / Edge**
 1. Open [claude.ai](https://claude.ai)
@@ -47,52 +40,53 @@ echo 'sk-ant-...' > ~/.config/queue-worker/session_key
 
 ## Environment variables
 
-| Variable | Default | Effect |
+| Variable | Required? | Effect |
 |---|---|---|
-| `CLAUDE_SESSION_KEY` | unset | Required for HTTP backend; the cookie value above |
-| `CLAUDE_ORG_UUID` | unset | Pin a specific org. **Required if your account has more than one org** — otherwise the HTTP backend refuses to auto-pick rather than risk querying the wrong one |
-| `QUEUE_WORKER_USAGE_BACKEND` | `auto` | `auto` (HTTP if key set, else Playwright), `http`, or `playwright` |
+| `CLAUDE_SESSION_KEY` | yes | The cookie value above |
+| `CLAUDE_ORG_UUID` | only on multi-org | Pin a specific org. **Required if your account has more than one org** — otherwise the HTTP backend refuses to auto-pick rather than risk querying the wrong one |
 
-## Recovery flow
+## Error codes
 
-When `QUEUE_WORKER_USAGE_BACKEND=auto`:
+The HTTP backend produces a stable `error_code` on each failure. The runner displays the latest one in the dashboard's "last check" panel.
 
-1. **HTTP first** when a session key is configured.
-2. On `between_sessions` (the API has no fresh `resets_at`), kick a fresh 5-hour window by running `claude -p "hi"` as a subprocess, settle 3s, then retry HTTP once.
-3. If HTTP still fails, or HTTP returns `session_key_missing` / `cloudflare_blocked`, fall back to Playwright. Playwright runs its own scrape → kick → retry loop as a final safety net.
-4. **Does not fall back on `session_key_invalid`** — rotate the key from your browser cookies. A bad key is a config issue that needs surfacing, not silently bypassing.
+| Code | What it means | What to do |
+|---|---|---|
+| `session_key_missing` | No key configured (env, .env, and key file all empty) | Set `CLAUDE_SESSION_KEY` |
+| `session_key_invalid` | The API returned 401 | Rotate the key from your browser cookies — sessions expire |
+| `between_sessions` | API has no active 5-hour window. The runner kicks `claude -p "hi"` once, settles 3s, then re-fetches. If recovery succeeds, this is invisible | (transient) |
+| `cloudflare_blocked` | Cloudflare challenged the API call | Wait. If it persists, your IP / headers may be flagged — there is no scraper fallback to bypass it |
+| `rate_limited` | API returned 429 | Backs off; retried on the next scheduled check |
+| `network_error` | DNS / TCP / TLS failure | Transient, retried on next check |
+| `http_error` | Other 5xx or unexpected response shape | Transient, retried on next check |
+| `bad_response` | Response body wasn't JSON or didn't have expected keys | Likely an upstream API change — check for queue-worker updates |
+| `multi_org_no_pin` | Your account has more than one org and `CLAUDE_ORG_UUID` is not set | Set `CLAUDE_ORG_UUID` to the org you want queried |
+| `org_resolve_failed` | The org list endpoint returned nothing usable | Likely an upstream API change — check for queue-worker updates |
+| `parse_failed` | Numbers were missing from the response | Likely an upstream API change — check for queue-worker updates |
 
-The "kick" trick — running `claude -p "hi"` to start the rolling window — works because the Claude CLI and `claude.ai` share the same plan and same 5-hour bucket. One short message via the CLI flips the API state, and the next read returns real numbers.
+## The `between_sessions` kick
 
-## Playwright backend specifics
+The Claude.ai 5-hour window starts on the **first message** sent in a new bucket. If the runner first checks usage when no session is active, the API has nothing to report.
 
-The Playwright backend connects to a long-running Chrome over CDP using a dedicated profile at `.chrome-profile/` (separate from your daily Chrome — keeps you logged in to Claude without affecting your normal browsing, and avoids bot-detection issues that would hit a generic automated profile).
+To recover: the runner runs `claude -p "hi"` as a subprocess. The Claude CLI shares the same plan and same 5-hour bucket as `claude.ai`, so one short message starts the window. After a 3-second settle the runner re-fetches and gets real numbers.
 
-- The runner **auto-launches Chrome** when it needs to scrape — you don't have to start it manually.
-- The first launch redirects to login. Log in once in that Chrome window — the profile persists across runs.
-- Each check writes a screenshot to `logs/usage_check_img/<ts>__<label>.png`. Pruned by age (7 days) with a hard cap of 5000 files as a safety net against runaway disk use.
-- If the page renders the "Starts when a message is sent" placeholder (window not yet started), the scraper kicks via `claude -p "hi"`, waits 3s, and re-reads (up to 3 retries).
-
-If you'd rather launch Chrome yourself before the runner starts:
-
-```bash
-python scripts/check_usage.py start
-```
+If `claude` isn't on PATH, the kick fails with a clear pointer to install Claude Code. Auth / rate-limit / network failures from the kick surface (with redaction) in the runner log and the dashboard's last-check status.
 
 ## CSV history
 
 Every successful check appends a row to `usage_history.csv` at the project root:
 
 ```
-timestamp,pct_used,reset_minutes,status,backend
+timestamp,pct_used,reset_minutes,status
 ```
 
-The web dashboard's Usage view plots this with Today / Week / Month / All ranges. The file is gitignored — it's local-only telemetry, no prompts or chat content.
+The web dashboard's Usage view plots this with Today / Week / Month / All ranges. The file is gitignored — local-only telemetry, no prompts or chat content.
 
-## Manual checks
+Exactly one row is appended per logical check, even when a kick recovery happened in the middle. The chart never sees phantom rows for transient errors that recovered.
+
+## Manual check
 
 ```bash
-# CLI doesn't expose a one-shot check command; use the web API:
+# CLI doesn't expose a one-shot check; use the web API:
 curl -X POST http://localhost:51002/api/check-usage
 ```
 
@@ -106,4 +100,9 @@ BURN_USAGE_THRESHOLD_PCT = 30   # only burn if usage_left ≥ 30%
 BURN_RESET_WINDOW_MIN    = 70   # only burn if reset_minutes < 70
 ```
 
-Both must be true. See [runner-state-machine.md](runner-state-machine.md) for why these defaults pair with the check schedule.
+The runner imports both. See [runner-state-machine.md](runner-state-machine.md) for why these defaults pair with the check schedule.
+
+## What this tool does NOT do
+
+- **No browser automation.** Earlier versions had a Playwright/CDP fallback that drove a real Chrome instance to scrape the rendered usage page. It was removed for v1 to drop the Chrome dependency. If the cookie API stops working (TOS change, Cloudflare hardening, endpoint shape change), the runner will report errors and stay in the chilling state until a fix lands.
+- **No interactive login flow.** You paste the cookie value once. When it expires (typically when you log out of claude.ai or hit the session-rotation interval), you re-paste. Sorry.

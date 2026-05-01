@@ -4,7 +4,7 @@ A usage-aware job queue for [Claude Code](https://docs.anthropic.com/en/docs/cla
 
 You queue tasks against your projects. The runner sits idle most of the day and only spawns `claude -p` subprocesses during the last hour of your 5-hour Claude.ai usage window — so unused budget gets used instead of wiped at reset. Each task gets a fresh Claude session with a project-specific identity, capability boundaries, and rolling memory injected via `CLAUDE.md`.
 
-> **Unofficial.** Not affiliated with, endorsed by, or supported by Anthropic. Reads your Claude.ai plan usage by calling the same web endpoints the claude.ai UI uses with your `sessionKey` cookie. **This may violate Anthropic's Terms of Service.** See [Disclaimer](#disclaimer).
+> **Unofficial.** Not affiliated with, endorsed by, or supported by Anthropic. Reads your Claude.ai plan usage by calling the same web endpoints the claude.ai UI uses with your `sessionKey` cookie. **This may violate Anthropic's Terms of Service.** See [Disclaimer](#disclaimer). If the cookie API ever stops working, this tool stops working — there is no browser-scraping fallback.
 
 ---
 
@@ -49,7 +49,7 @@ Full state-machine details: [docs/runner-state-machine.md](docs/runner-state-mac
 
 ## Quick start
 
-Requires **Python 3.11+**, **Google Chrome**, and **Claude Code** installed and authenticated. Tested on macOS.
+Requires **Python 3.11+** and **Claude Code** installed and authenticated. Tested on macOS, should work on Linux. No browser dependency.
 
 ```bash
 # Install
@@ -58,9 +58,8 @@ cd queue-up-for-claude
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-playwright install chromium
 
-# Configure (HTTP usage backend — recommended)
+# Configure
 cp .env.example .env && chmod 0600 .env
 # paste your claude.ai sessionKey into .env (see docs/usage-checking.md)
 
@@ -76,7 +75,7 @@ queue-worker-web
 # open http://localhost:51002
 ```
 
-The first usage check auto-launches a dedicated Chrome window pointed at `claude.ai`. Log in once — the profile persists in `.chrome-profile/` for future runs.
+Usage is read by calling the same `/api/organizations/{uuid}/usage` endpoint the claude.ai UI uses, authenticated with your sessionKey cookie. See [docs/usage-checking.md](docs/usage-checking.md) for how to grab the cookie and how recovery works when the API reports the account is between 5-hour windows.
 
 ---
 
@@ -84,7 +83,7 @@ The first usage check auto-launches a dedicated Chrome window pointed at `claude
 
 | Area | What | Read more |
 |---|---|---|
-| **Usage-aware runner** | Chilling/burning state machine, reset-anchored scheduling, dual-backend usage check (HTTP + Playwright) | [runner-state-machine.md](docs/runner-state-machine.md), [usage-checking.md](docs/usage-checking.md) |
+| **Usage-aware runner** | Chilling/burning state machine, reset-anchored scheduling, HTTP usage check via claude.ai cookie API | [runner-state-machine.md](docs/runner-state-machine.md), [usage-checking.md](docs/usage-checking.md) |
 | **Per-project agent identity** | `.agent/` directory with AGENT/CONTEXT/BEHAVIOR + rolling memory (procedural / semantic / episodic), checkpoints, briefings, proposed memory edits | [agent-context.md](docs/agent-context.md) |
 | **Capability boundaries** | Four levels (observer / craftsman / committer / deployer) compiled into ALLOWED / NOT ALLOWED sections of the injected `CLAUDE.md`; per-task overrides | [agent-context.md](docs/agent-context.md#capability-levels) |
 | **Web dashboard** | FastAPI + Alpine.js SPA at `localhost:51002` — task CRUD, live terminal output, file browser, usage chart, logs viewer | [web-dashboard.md](docs/web-dashboard.md) |
@@ -102,12 +101,11 @@ queue-up-for-claude/
 ├── pyproject.toml          ← package metadata + entry points
 ├── config/profiles.yaml    ← capability level definitions
 ├── docs/                   ← per-feature documentation
-├── scripts/check_usage.py  ← standalone usage-check CLI for debugging
 ├── src/queue_worker/       ← all Python code
 │   ├── cli.py              ← Click CLI commands + .agent/ templates
 │   ├── web.py              ← FastAPI dashboard + embedded runner thread
 │   ├── runner.py           ← state machine + scheduling
-│   ├── usage_check.py      ← Playwright backend + dispatcher + CSV
+│   ├── usage_check.py      ← dispatcher: kick recovery + CSV write
 │   ├── usage_check_http.py ← HTTP backend (claude.ai cookie API)
 │   ├── executor.py         ← claude -p subprocess lifecycle
 │   ├── injector.py         ← CLAUDE.md builder + inject/cleanup
@@ -130,10 +128,7 @@ queue-up-for-claude/
 
 **This is unofficial software.** It is not affiliated with, endorsed by, or supported by Anthropic PBC.
 
-queue-up-for-claude reads your Claude.ai plan usage by:
-
-- Calling the same web API endpoints the claude.ai UI uses, authenticated with your `sessionKey` browser cookie (HTTP backend), or
-- Scraping the rendered usage page through a logged-in Chrome instance via CDP (Playwright backend).
+queue-up-for-claude reads your Claude.ai plan usage by calling the same web API endpoints the claude.ai UI uses, authenticated with your `sessionKey` browser cookie.
 
 **This may violate Anthropic's Terms of Service.** By using this software you accept that:
 

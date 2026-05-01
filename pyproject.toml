@@ -10,7 +10,6 @@ dependencies = [
     "click>=8.1",
     "PyYAML>=6.0",
     "fastapi[standard]>=0.115",
-    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]

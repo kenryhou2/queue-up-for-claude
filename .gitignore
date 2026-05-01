@@ -15,11 +15,6 @@ build/
 .claude/
 .context/
 
-# Browser profiles (used by the usage scraper — contain login state)
-.chrome-profile/
-.playwright-profile/
-.playwright-mcp/
-
 # Runtime state — never check in
 logs/
 queue/running/

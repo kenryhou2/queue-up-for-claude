@@ -83,8 +83,8 @@ class TestComputeEligibleAt:
         state = {
             'last_check_at': now.timestamp() - 5,  # fresh timestamp
             'last_check_reset_minutes': 90,        # stale successful value
-            'last_check_error': 'Chrome unavailable',
-            'last_check_status': 'ERROR:Chrome unavailable',
+            'last_check_error': 'cloudflare blocked the API endpoint',
+            'last_check_status': 'ERROR:cloudflare_blocked',
         }
         out = compute_eligible_at(RUN_POLICY_NEXT_SESSION, state, now=now)
         expected = now + timedelta(minutes=SESSION_LENGTH_MINUTES)

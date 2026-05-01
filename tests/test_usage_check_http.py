@@ -537,7 +537,7 @@ def test_fetch_returns_usage_check_result(
     assert result.status == 'Chilling'
 
 
-# ── decide() reuse — semantic alignment with Playwright path ───────────────
+# ── decide() — status-label semantics ──────────────────────────────────────
 
 @pytest.mark.parametrize('pct,reset_min,expected_status', [
     (50, 60, 'NEED TO BURN TOKEN !'),  # usage_left=50, reset<70 → burn
@@ -586,9 +586,9 @@ def test_load_session_key_neither_source(monkeypatch, tmp_path):
 
 
 def test_load_session_key_format_failure_is_missing_not_invalid(monkeypatch):
-    """Format-validation failures must surface as SessionKeyMissing so the
-    dispatcher's auto branch falls back to Playwright. SessionKeyInvalid is
-    reserved for actual server 401s."""
+    """Format-validation failures must surface as SessionKeyMissing so a
+    fat-fingered .env entry shows up as 'no key configured' rather than a
+    hard crash. SessionKeyInvalid is reserved for actual server 401s."""
     monkeypatch.setenv('CLAUDE_SESSION_KEY', 'not-a-claude-key')
     with pytest.raises(uch.SessionKeyMissing):
         uch._load_session_key()

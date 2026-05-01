@@ -5,9 +5,9 @@ Calls the same web endpoints as the claude.ai UI:
   GET https://claude.ai/api/organizations/{uuid}/usage
 authenticated by the user's `sessionKey` cookie + browser-shaped headers.
 
-Returns the same UsageCheckResult shape as the Playwright backend so the
-runner is agnostic to which path produced the result. The dispatcher in
-usage_check.py owns CSV writes; this module is fetch+parse only.
+Returns a UsageCheckResult to the dispatcher in usage_check.py, which owns
+CSV writes and `between_sessions` kick recovery. This module is fetch+parse
+only.
 """
 
 import gzip
@@ -121,11 +121,10 @@ def redact(s: str) -> str:
 def _validate_key(key: str) -> str:
     """Format check only — raises SessionKeyMissing for malformed values.
 
-    Format failures are local config issues equivalent to "no key configured":
-    the dispatcher's `auto` branch falls back to Playwright on
-    SessionKeyMissing, but NOT on SessionKeyInvalid (the latter is reserved
-    for actual server 401s — only the server can adjudicate validity). A
-    fat-fingered .env entry should not hard-fail; it should fall through.
+    Format failures are local config issues equivalent to "no key configured".
+    SessionKeyMissing surfaces as a config error to the user; SessionKeyInvalid
+    is reserved for actual server 401s (only the server can adjudicate validity).
+    A fat-fingered .env entry surfaces as 'missing' rather than crashing.
     """
     key = key.strip()
     if not key.startswith('sk-ant-') or len(key) <= 10:
@@ -314,7 +313,7 @@ def _request(url: str, key: str):
 # ── Parse /usage response ───────────────────────────────────────────────────
 
 def _format_reset_str(reset_minutes: int) -> str:
-    """Match the existing scraper's format: 'Xhr Ymin' / 'Xmin' / 'Xsec'."""
+    """Format reset time for display: 'Xhr Ymin' / 'Xmin' / 'Xsec'."""
     if reset_minutes <= 0:
         return '0min'
     hrs = reset_minutes // 60
@@ -346,8 +345,8 @@ def _parse_usage(data, now_utc: datetime, log_fn) -> tuple[int, int, str]:
 
     Validates only the fields we read. Unknown top-level keys are ignored
     (forward-compat for fields like `iguana_necktie`, `extra_usage`, ...).
-    Raises BetweenSessions when the API has no resets_at — only Playwright's
-    session-kick can recover from that.
+    Raises BetweenSessions when the API has no resets_at — the dispatcher
+    runs `claude -p "hi"` to start a 5-hour window, then re-fetches.
     """
     if not isinstance(data, dict):
         raise HttpUpstreamError('bad_response', 'response not a dict')
@@ -435,7 +434,7 @@ def fetch_usage_http(log_fn=lambda _msg: None):
         except SessionKeyInvalid:
             raise  # do not retry — config issue
         except BetweenSessions:
-            raise  # do not retry — fall back to Playwright kick
+            raise  # do not retry — dispatcher runs the kick + re-fetch
         except RateLimited as e:
             last_exc = e
             sleep_s = RATE_LIMIT_BACKOFF_BASE_S ** attempt

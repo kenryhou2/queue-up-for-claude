@@ -12,7 +12,7 @@ Reset anchor: a `next_reset_at` epoch is tracked across cycles. The canonical
 re-anchor is the post_reset check at T+5min. Other checks (manual, hourly
 fallback, pre_reset before post_reset has succeeded) can re-anchor inside a
 ±15min sanity band — wildly different proposals are logged and rejected, so
-a single noisy scrape can't repaint truth. Burn decisions use min(scrape,
+a single noisy fetch can't repaint truth. Burn decisions use min(fetched,
 anchor) so a stale anchor cannot fire a burn that fresh evidence already
 contradicts.
 
@@ -74,12 +74,13 @@ class RunnerState:
     last_anchor_kind: Optional[str] = None             # diagnostic
     last_anchor_at: Optional[float] = None             # diagnostic
     last_check_error_code: Optional[str] = None        # stable code for /api/status
-    last_check_backend: Optional[str] = None           # 'http' | 'playwright'
+    last_check_backend: Optional[str] = None           # always 'http' (kept for API shape)
 
 
 _runner_state = RunnerState()
 _state_lock = threading.Lock()
-_usage_check_lock = threading.Lock()   # serializes Playwright/CDP scrapes
+_usage_check_lock = threading.Lock()   # serializes usage checks (prevents concurrent
+                                       # `claude -p "hi"` kicks and CSV row interleave)
 _loop_wake = threading.Event()         # set on state change → wakes the runner loop
 
 # Pending one-shot reset-anchored checks, guarded by _state_lock. Always read/
@@ -462,7 +463,7 @@ def _apply_anchor_update_locked(action: _ActionKind, effective_kind: CheckKind,
 
     # action == 'skip' — done flags must NOT be flipped here. They mean
     # "this cycle's canonical re-anchor for that kind LANDED", and flipping
-    # them on a rejected scrape would freeze recovery: hourly stops promoting
+    # them on a rejected fetch would freeze recovery: hourly stops promoting
     # to fallback, pre_reset stops being allowed to re-anchor, and the
     # stale-anchor clamp stops firing.
     if proposed is not None and snap.next_reset_at is not None:
@@ -490,9 +491,9 @@ def _set_anchor_locked(proposed: float, effective_kind: CheckKind,
     )
 
 
-def _effective_burn_minutes(scrape_min: Optional[int],
+def _effective_burn_minutes(fetch_min: Optional[int],
                             anchor_at: Optional[float], now: float) -> Optional[float]:
-    """Return min(scrape, anchor) in minutes — whichever is shorter wins.
+    """Return min(fetch, anchor) in minutes — whichever is shorter wins.
 
     Used to decide burn so a stale anchor cannot fire a burn that fresh
     evidence already contradicts (and vice-versa). A past-due anchor is
@@ -501,8 +502,8 @@ def _effective_burn_minutes(scrape_min: Optional[int],
     that flickers state without doing useful work.
     """
     candidates: list[float] = []
-    if scrape_min is not None:
-        candidates.append(float(scrape_min))
+    if fetch_min is not None:
+        candidates.append(float(fetch_min))
     if anchor_at is not None and anchor_at > now:
         candidates.append((anchor_at - now) / 60.0)
     return min(candidates) if candidates else None
@@ -515,14 +516,14 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
     was skipped because another check is already in progress.
 
     Honors:
-    1. Only one scrape runs at a time (Playwright/CDP isn't re-entrant on the
-       same Chrome). Concurrent calls are silently dropped — caller can
-       requeue if the check came from the scheduled queue.
+    1. Only one usage check runs at a time. Prevents concurrent kicks and
+       interleaved CSV writes. Concurrent calls are silently dropped — caller
+       can requeue if the check came from the scheduled queue.
     2. A check during an active burn window does NOT downgrade state — the
        check still records the latest pct/reset and may re-anchor, but
        burn_until is left alone so the runner finishes the burn naturally.
-    3. Transient errors (Chrome down, parse failure) record the error but
-       leave the state machine alone — never clobber an active burn.
+    3. Transient errors (network, parse failure, Cloudflare block) record the
+       error but leave the state machine alone — never clobber an active burn.
     4. Re-anchor decisions are sanity-banded (see _decide_anchor_action).
     """
     if not _usage_check_lock.acquire(blocking=False):
@@ -571,7 +572,7 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
         if kind == 't_minus_60':
             fields['t_minus_60_done_for_cycle'] = True
 
-        # Burn decision uses min(scrape, anchor) — the safer of the two.
+        # Burn decision uses min(fetch, anchor) — the safer of the two.
         anchor_for_burn = (
             None if action == 'clamp' else snap.next_reset_at
         )
@@ -592,7 +593,7 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
             burn_until = now + eff_min * 60
             log.info(
                 f'NEED TO BURN TOKEN! pct={result.pct}% effective_reset={eff_min:.1f}min '
-                f'(scrape={result.reset_minutes}min, anchor={"-" if anchor_for_burn is None else f"{(anchor_for_burn-now)/60:.1f}min"}) '
+                f'(fetch={result.reset_minutes}min, anchor={"-" if anchor_for_burn is None else f"{(anchor_for_burn-now)/60:.1f}min"}) '
                 f'burn until {datetime.fromtimestamp(burn_until).strftime("%H:%M:%S")}'
             )
             fields.update(state=STATE_BURNING, burn_until=burn_until)

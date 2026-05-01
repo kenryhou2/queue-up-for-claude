@@ -35,16 +35,16 @@ Default. No queued tasks run automatically. The runner only checks usage on a sc
 - **Reset-anchored**: 60 min before reset (`t_minus_60`), 10 min before reset (`pre_reset`), and 5 min after reset (`post_reset`). The post_reset check is the canonical re-anchor for the next 5-hour cycle.
 - **Suppression**: when a reset-anchored slot is within ±10 min of an HH:00 tick, the hourly is suppressed so two checks don't land minutes apart.
 - **Anchor persistence**: `next_reset_at` is written to `state/runner_state.json`. A restart mid-cycle re-arms the schedule from the persisted anchor.
-- **Anchor sanity bands**: anchor updates are accepted only within ±15 min of the prior anchor (or after a 30-min stale grace). Noisy single scrapes can't repaint the truth, but a fallback-promoted hourly takes over if `post_reset` never lands.
+- **Anchor sanity bands**: anchor updates are accepted only within ±15 min of the prior anchor (or after a 30-min stale grace). Noisy single fetches can't repaint the truth, but a fallback-promoted hourly takes over if `post_reset` never lands.
 
 **Burn trigger**
 
 ```python
 should_burn = (usage_left_pct >= 30) and (effective_reset_min < 70)
-effective_reset_min = min(latest_scrape_reset, anchor_remaining)
+effective_reset_min = min(latest_fetch_reset, anchor_remaining)
 ```
 
-Fresh evidence wins over a stale anchor — a burn cannot fire on an anchor that the latest scrape has contradicted.
+Fresh evidence wins over a stale anchor — a burn cannot fire on an anchor that the latest fetch has contradicted.
 
 **Why 30 / 70?** They live as constants in `src/queue_worker/usage_check.py`:
 
@@ -70,8 +70,8 @@ The runner processes pending tasks one at a time, in dependency + priority order
 
 - **One task at a time.** A process-wide `_execute_lock` serializes `claude -p` invocations across all three execution paths (background runner, `Run All (once)`, `Run This Task`). Two tasks never run concurrently even with the dashboard open in three tabs.
 - **Lock-before-select.** The background runner acquires `_execute_lock` *before* choosing a task so a concurrent web run can't snipe it. After the lock, it re-checks `burn_until` so long waits can't push starts past the deadline.
-- **Concurrent scrapes coalesced.** A `_usage_check_lock` ensures only one Playwright session talks to Chrome at a time. Extra manual checks during an in-flight scrape are silently dropped.
-- **Manual checks during burn don't downgrade state.** They record the latest pct/reset but leave `state` and `burn_until` alone. Transient scrape errors are recorded without touching state.
+- **Concurrent checks coalesced.** A `_usage_check_lock` ensures only one usage check is in flight at a time. Prevents double `claude -p "hi"` kicks and interleaved CSV writes. Extra manual checks during an in-flight fetch are silently dropped.
+- **Manual checks during burn don't downgrade state.** They record the latest pct/reset but leave `state` and `burn_until` alone. Transient fetch errors are recorded without touching state.
 - **Concurrent task mutations are tolerated.** If a task disappears between selection and `begin_task` (e.g. cancelled from another tab), the runner catches `FileNotFoundError` and retries on the next tick.
 
 ## Crash recovery

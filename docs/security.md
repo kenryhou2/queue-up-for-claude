@@ -71,7 +71,6 @@ This is **defense in depth** — the source code is supposed to never put a secr
 | Usage history | `usage_history.csv` | default | yes |
 | Task YAMLs | `queue/<bucket>/<id>.yaml` | default | `running/` is gitignored; the rest is your call |
 | Per-task output | `logs/YYYY-MM-DD.log` | default | yes |
-| Browser profile | `.chrome-profile/` | default | yes |
 
 ## Rotation
 
