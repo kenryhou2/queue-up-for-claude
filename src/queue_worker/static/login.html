@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>queue-worker · login</title>
+<style>
+:root {
+  --bg: #0f1117; --bg2: #1a1d27; --bg3: #242734; --border: #2e3140;
+  --text: #e0e0e8; --text2: #8b8fa3; --accent: #6c8aff; --red: #ef4444;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+       background: var(--bg); color: var(--text);
+       display: flex; align-items: center; justify-content: center; height: 100vh; }
+.box { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+       padding: 28px 32px; width: 340px; }
+h1 { font-size: 18px; color: var(--accent); margin-bottom: 18px; }
+label { font-size: 12px; color: var(--text2); display: block; margin-bottom: 6px; }
+input { width: 100%; background: var(--bg); border: 1px solid var(--border);
+        color: var(--text); padding: 10px 12px; border-radius: 6px; font-size: 14px; }
+input:focus { outline: none; border-color: var(--accent); }
+button { width: 100%; margin-top: 14px; background: var(--accent); color: #fff;
+         border: none; padding: 10px; border-radius: 6px; font-size: 14px;
+         cursor: pointer; font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.msg { font-size: 12px; margin-top: 10px; min-height: 1.2em; line-height: 1.4; }
+.msg.err { color: var(--red); }
+.msg.info { color: var(--text2); }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>queue-worker</h1>
+  <form id="f" autocomplete="on">
+    <label for="pw">Password</label>
+    <input type="password" id="pw" name="password" autofocus autocomplete="current-password" required>
+    <button type="submit" id="btn">Unlock</button>
+    <div class="msg" id="msg"></div>
+  </form>
+</div>
+<script>
+const f = document.getElementById('f');
+const pw = document.getElementById('pw');
+const msg = document.getElementById('msg');
+const btn = document.getElementById('btn');
+
+function show(text, kind) {
+  msg.textContent = text;
+  msg.className = 'msg ' + (kind || 'info');
+}
+
+function fmtCountdown(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  btn.disabled = true;
+  show('');
+  try {
+    const r = await fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw.value}),
+    });
+    if (r.ok) {
+      location.href = '/';
+      return;
+    }
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 429) {
+      show(`Locked out for ${fmtCountdown(j.retry_after || 600)}.`, 'err');
+    } else if (j.remaining_attempts !== undefined && j.remaining_attempts > 0) {
+      show(`Wrong password. ${j.remaining_attempts} attempt${j.remaining_attempts === 1 ? '' : 's'} left.`, 'err');
+    } else {
+      show('Login failed.', 'err');
+    }
+  } catch (err) {
+    show('Network error — try again.', 'err');
+  } finally {
+    btn.disabled = false;
+    pw.value = '';
+    pw.focus();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>queue-worker</title>
+<script>
+// Redirect to /login on 401 from any fetch (session expired)
+(() => {
+  const orig = window.fetch;
+  window.fetch = async (...args) => {
+    const r = await orig(...args);
+    if (r.status === 401) {
+      location.href = '/login';
+      return new Promise(() => {});
+    }
+    return r;
+  };
+})();
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+<style>
+:root {
+  --bg: #0f1117; --bg2: #1a1d27; --bg3: #242734; --border: #2e3140;
+  --text: #e0e0e8; --text2: #8b8fa3; --accent: #6c8aff;
+  --blue: #3b82f6; --amber: #f59e0b; --green: #22c55e;
+  --purple: #a855f7; --red: #ef4444;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+       background: var(--bg); color: var(--text); display: flex; height: 100vh; }
+button { cursor: pointer; border: 1px solid var(--border); background: var(--bg3);
+         color: var(--text); padding: 6px 14px; border-radius: 6px; font-size: 13px; }
+button:hover { background: var(--border); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+input, textarea, select { background: var(--bg); border: 1px solid var(--border);
+       color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; }
+textarea { font-family: 'SF Mono', 'Fira Code', monospace; min-height: 120px; resize: vertical; }
+select { appearance: auto; }
+label { font-size: 12px; color: var(--text2); display: block; margin-bottom: 4px; }
+
+.sidebar { width: 200px; background: var(--bg2); border-right: 1px solid var(--border);
+           padding: 16px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; }
+.sidebar h1 { font-size: 15px; margin-bottom: 12px; color: var(--accent); }
+.sidebar button { text-align: left; border: none; background: none; padding: 8px 10px;
+                  border-radius: 6px; color: var(--text2); font-size: 13px; }
+.sidebar button:hover, .sidebar button.active { background: var(--bg3); color: var(--text); }
+.main { flex: 1; overflow-y: auto; padding: 24px; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+         font-weight: 600; text-transform: uppercase; }
+.badge-pending { background: #1e3a5f; color: var(--blue); }
+.badge-running { background: #3d2e0a; color: var(--amber); }
+.badge-done { background: #0a3d1a; color: var(--green); }
+.badge-unfinished { background: #2d1a4a; color: var(--purple); }
+.badge-failed { background: #3d0a0a; color: var(--red); }
+.badge-resume { background: #2d1a4a; color: var(--purple); margin-left: 8px;
+                letter-spacing: 0.5px; }
+.resume-banner { background: #2d1a4a; border: 1px solid var(--purple); border-radius: 6px;
+                 padding: 10px 14px; margin: 10px 0 14px 0; }
+.resume-banner .label { color: var(--purple); font-weight: 600; font-size: 11px;
+                        text-transform: uppercase; letter-spacing: 0.5px; }
+.resume-banner .body { color: var(--text); font-size: 13px; margin-top: 4px;
+                       line-height: 1.5; }
+.resume-banner .meta { color: var(--text2); font-size: 11px; margin-top: 4px; }
+
+.stats { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+.stat { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 16px 20px; min-width: 120px; text-align: center; cursor: pointer; }
+.stat:hover { border-color: var(--accent); }
+.stat .num { font-size: 28px; font-weight: 700; }
+.stat .label { font-size: 11px; color: var(--text2); text-transform: uppercase; margin-top: 4px; }
+.lock-status { padding: 10px 16px; border-radius: 8px; font-weight: 600; display: inline-block; }
+.state-chilling { background: #1e3a5f; color: var(--blue); }
+.state-burning { background: #3d2e0a; color: var(--amber); }
+.state-meta { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.6; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--text2); font-size: 11px; text-transform: uppercase;
+     padding: 8px 10px; border-bottom: 1px solid var(--border); }
+td { padding: 10px; border-bottom: 1px solid var(--border); }
+tr:hover { background: var(--bg2); cursor: pointer; }
+.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+.truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.form-group { margin-bottom: 14px; }
+.form-row { display: flex; gap: 12px; }
+.form-row > * { flex: 1; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { opacity: 0.9; }
+.btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
+.btn-danger:hover { opacity: 0.9; }
+.btn-green { background: var(--green); color: #000; border-color: var(--green); }
+.btn-amber { background: var(--amber); color: #000; border-color: var(--amber); }
+
+.detail-grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; font-size: 13px; }
+.detail-grid dt { color: var(--text2); }
+.detail-grid dd { word-break: break-all; }
+.actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+
+.context-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+               padding: 16px; margin-top: 16px; max-height: 500px; overflow-y: auto; }
+.context-box pre { white-space: pre-wrap; font-size: 12px; font-family: 'SF Mono', monospace; }
+
+.log-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+           padding: 16px; max-height: 600px; overflow-y: auto; }
+.log-box pre { white-space: pre-wrap; font-size: 11px; font-family: 'SF Mono', monospace;
+               color: var(--text2); line-height: 1.6; }
+
+.toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3);
+         border: 1px solid var(--border); padding: 12px 20px; border-radius: 8px;
+         font-size: 13px; z-index: 100; }
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200;
+                 display: flex; align-items: center; justify-content: center; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+         width: 500px; max-height: 70vh; display: flex; flex-direction: column; }
+.modal-header { padding: 14px 18px; border-bottom: 1px solid var(--border);
+                display: flex; justify-content: space-between; align-items: center; }
+.modal-header h3 { font-size: 14px; }
+.modal-path { padding: 10px 18px; background: var(--bg); font-family: 'SF Mono', monospace;
+              font-size: 12px; color: var(--text2); border-bottom: 1px solid var(--border);
+              display: flex; align-items: center; gap: 8px; }
+.modal-path input { flex: 1; background: none; border: none; color: var(--text);
+                    font-family: inherit; font-size: inherit; padding: 0; }
+.modal-body { flex: 1; overflow-y: auto; }
+.dir-item { padding: 8px 18px; cursor: pointer; font-size: 13px;
+            display: flex; align-items: center; gap: 8px; }
+.dir-item:hover { background: var(--bg3); }
+.dir-icon { color: var(--amber); font-size: 14px; }
+.modal-footer { padding: 12px 18px; border-top: 1px solid var(--border);
+                display: flex; justify-content: flex-end; gap: 8px; }
+
+.running-indicator { display: inline-flex; align-items: center; gap: 6px;
+                     color: var(--amber); font-size: 13px; }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border);
+           border-top-color: var(--amber); border-radius: 50%;
+           animation: spin 0.8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.detail-layout {
+  display: flex;
+  gap: 0;
+  height: calc(100vh - 48px);
+  margin: -24px;
+}
+.detail-layout > .panel {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+  border-left: 1px solid var(--border);
+  display: none;
+}
+.detail-layout > .panel:first-child {
+  border-left: none;
+}
+.detail-layout > .panel.is-open {
+  display: block;
+}
+.panel-path {
+  margin-bottom: 8px;
+  word-break: break-all;
+  font-size: 13px;
+}
+.panel-msg {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.fb-entry-meta {
+  color: var(--text2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.fb-dir-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 4px;
+}
+.fb-dir-item:hover { background: var(--bg3); }
+.file-text {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 8px;
+  max-height: 70vh;
+  overflow: auto;
+}
+.file-image {
+  max-width: 100%;
+  display: block;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.file-pdf {
+  width: 100%;
+  height: 80vh;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.file-msg {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  color: var(--text2);
+  margin-top: 8px;
+}
+@media (max-width: 768px) {
+  .detail-layout > .panel.is-open { display: none; }
+  .detail-layout > .panel.is-open.is-active { display: block; }
+}
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <h1>queue-worker</h1>
+  <button :class="{ active: view === 'dashboard' }" @click="go('dashboard')">Dashboard</button>
+  <button :class="{ active: view === 'list' }" @click="go('list'); loadTasks()">Tasks</button>
+  <button :class="{ active: view === 'add' }" @click="go('add')">Add Task</button>
+  <button :class="{ active: view === 'logs' }" @click="go('logs'); loadLogs()">Logs</button>
+  <button :class="{ active: view === 'usage' }" @click="go('usage'); loadUsage()">Usage</button>
+  <div style="flex: 1"></div>
+  <button @click="logout()" style="color: var(--text2)">Logout</button>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Dashboard -->
+  <template x-if="view === 'dashboard'">
+    <div>
+      <h2>Dashboard</h2>
+      <div style="margin: 16px 0">
+        <span class="lock-status"
+              :class="status.runner?.state === 'burning' ? 'state-burning' : 'state-chilling'"
+              x-text="status.runner?.state === 'burning' ? 'BURNING (auto work)' : 'CHILLING (hourly check)'"></span>
+        <button @click="checkUsageNow()" :disabled="checkingUsage" style="margin-left: 10px">
+          <span x-text="checkingUsage ? 'Checking...' : 'Check usage now'"></span>
+        </button>
+        <div class="state-meta" x-show="status.runner">
+          <template x-if="status.runner?.state === 'burning' && status.runner?.burn_until">
+            <div>Burn until: <span x-text="fmtFullTime(status.runner.burn_until * 1000)"></span> (in <span x-text="fmtCountdown((status.runner.burn_until * 1000) - Date.now())"></span>)</div>
+          </template>
+          <template x-if="status.runner?.last_check_at">
+            <div>Last check: <span x-text="fmtFullTime(status.runner.last_check_at * 1000)"></span> · usage <span x-text="(status.runner.last_check_pct ?? '?') + '%'"></span> · status: <span x-text="status.runner.last_check_status || 'N/A'"></span></div>
+          </template>
+          <template x-if="status.runner?.last_check_error">
+            <div style="color: var(--red)">Last error: <span x-text="status.runner.last_check_error"></span></div>
+          </template>
+        </div>
+      </div>
+      <div class="stats">
+        <template x-for="s in ['pending','running','done','unfinished','failed']" :key="s">
+          <div class="stat" @click="go('list'); statusFilter = s; loadTasks()">
+            <div class="num" x-text="status.counts?.[s] ?? 0"></div>
+            <div class="label" x-text="s"></div>
+          </div>
+        </template>
+      </div>
+      <div style="margin-top: 20px; display: flex; gap: 12px; align-items: center">
+        <button class="btn-primary" @click="runOnce()" :disabled="runnerActive">
+          <span x-text="runnerActive ? 'Runner active...' : 'Run All (once)'"></span>
+        </button>
+        <span x-show="runnerActive" class="running-indicator">
+          <span class="spinner"></span> Processing queue...
+        </span>
+      </div>
+    </div>
+  </template>
+
+  <!-- Task List -->
+  <template x-if="view === 'list'">
+    <div>
+      <h2>Tasks</h2>
+      <div style="display: flex; gap: 6px; margin: 12px 0">
+        <button :class="{ active: statusFilter === '' }" @click="statusFilter = ''; loadTasks()">All</button>
+        <template x-for="s in ['pending','running','done','unfinished','failed']">
+          <button :class="{ active: statusFilter === s }" @click="statusFilter = s; loadTasks()" x-text="s"></button>
+        </template>
+      </div>
+      <table>
+        <thead><tr>
+          <th style="cursor:pointer" @click="sortBy('id')">ID <span x-text="sortIcon('id')"></span></th>
+          <th>Status</th>
+          <th style="cursor:pointer" @click="sortBy('level')">Level <span x-text="sortIcon('level')"></span></th>
+          <th style="cursor:pointer" @click="sortBy('priority')">Pri <span x-text="sortIcon('priority')"></span></th>
+          <th style="cursor:pointer" @click="sortBy('dir')">Dir <span x-text="sortIcon('dir')"></span></th>
+          <th style="cursor:pointer" @click="sortBy('created')">Created <span x-text="sortIcon('created')"></span></th>
+          <th style="cursor:pointer" @click="sortBy('finished_at')">Finished <span x-text="sortIcon('finished_at')"></span></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="t in sortedTasks" :key="t.id">
+            <tr @click="viewTask(t.id)">
+              <td class="mono">
+                <span x-text="t.id"></span>
+                <span x-show="t.session_id" class="badge badge-resume"
+                      title="Resumes a Claude conversation">&#x21BB; RESUME</span>
+              </td>
+              <td><span class="badge" :class="'badge-' + t._status" x-text="t._status"></span></td>
+              <td x-text="t.level || '?'"></td>
+              <td x-text="t.priority || '?'"></td>
+              <td class="truncate" x-text="t.dir || '?'"></td>
+              <td style="white-space:nowrap; font-size:12px" x-text="fmtTime(t.created)"></td>
+              <td style="white-space:nowrap; font-size:12px" x-text="fmtTime(t.finished_at)"></td>
+            </tr>
+          </template>
+          <template x-if="tasks.length === 0">
+            <tr><td colspan="7" style="color: var(--text2); text-align: center; padding: 40px">No tasks</td></tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+  <!-- Task Detail -->
+  <template x-if="view === 'detail'">
+    <div class="detail-layout">
+
+      <!-- Panel 1: detail (existing content) -->
+      <div class="panel panel-detail"
+           :class="{ 'is-open': true, 'is-active': activePanel === 'detail' }">
+        <button @click="go('list'); loadTasks()" style="margin-bottom: 12px">&larr; Back</button>
+        <h2 class="mono" x-text="detail.id"></h2>
+        <div style="display: flex; align-items: center; gap: 10px; margin: 8px 0">
+          <span class="badge" :class="'badge-' + detail._status" x-text="detail._status"></span>
+          <span x-show="detail.session_id" class="badge badge-resume"
+                style="margin-left:0">&#x21BB; RESUME</span>
+          <span x-show="taskRunning" class="running-indicator">
+            <span class="spinner"></span> Executing...
+          </span>
+        </div>
+
+        <template x-if="detail.session_id">
+          <div class="resume-banner">
+            <div class="label">&#x21BB; Resumes Claude session</div>
+            <template x-if="resumeStatus === 'loading'">
+              <div class="body" style="color:var(--text2)">Loading transcript...</div>
+            </template>
+            <template x-if="resumeStatus === 'error'">
+              <div class="body" style="color:var(--amber)"
+                   x-text="'Could not load transcript: ' + (resume?.error || 'unknown')"></div>
+            </template>
+            <template x-if="resumeStatus === 'empty'">
+              <div class="body" style="color:var(--text2); font-style:italic">
+                (no human messages in transcript yet)
+              </div>
+            </template>
+            <template x-if="resumeStatus === 'loaded'">
+              <div class="body" x-text="resume.last_user_message"></div>
+            </template>
+            <div class="meta">
+              <span class="mono" style="cursor:pointer"
+                    @click="copyText(detail.session_id)"
+                    :title="'Click to copy ' + detail.session_id"
+                    x-text="(detail.session_id || '').slice(0,8) + '…' + (detail.session_id || '').slice(-4)"></span>
+              <template x-if="resume && resume.ok">
+                <span x-text="' · ' + (resume.message_count ?? '?') + ' messages'"></span>
+              </template>
+              <template x-if="resumeStatus === 'loaded' && resume.first_user_message && resume.first_user_message !== resume.last_user_message">
+                <span>
+                  · <span style="cursor:pointer; color:var(--accent)"
+                         @click="showFirstMsg = !showFirstMsg"
+                         x-text="showFirstMsg ? 'hide first message' : 'show first message'"></span>
+                </span>
+              </template>
+            </div>
+            <template x-if="showFirstMsg && resume?.first_user_message">
+              <div class="body"
+                   style="margin-top:6px; padding-top:6px; border-top:1px solid var(--border); color:var(--text2)"
+                   x-text="resume.first_user_message"></div>
+            </template>
+          </div>
+        </template>
+
+        <dl class="detail-grid" style="margin-top: 16px">
+          <dt>Dir</dt><dd class="mono" x-text="detail.dir"></dd>
+          <dt>Level</dt><dd x-text="detail.level"></dd>
+          <dt>Priority</dt><dd x-text="detail.priority"></dd>
+          <dt>Dry Run</dt><dd x-text="detail.dry_run"></dd>
+          <dt>Created</dt><dd x-text="detail.created"></dd>
+          <dt>Tags</dt><dd x-text="(detail.tags || []).join(', ') || 'none'"></dd>
+          <dt>Depends On</dt><dd x-text="(detail.depends_on || []).join(', ') || 'none'"></dd>
+          <dt>Max Minutes</dt><dd x-text="detail.budget?.max_minutes || 120"></dd>
+          <template x-if="detail.started_at"><dt>Started</dt></template>
+          <template x-if="detail.started_at"><dd x-text="detail.started_at"></dd></template>
+          <template x-if="detail.finished_at"><dt>Finished</dt></template>
+          <template x-if="detail.finished_at"><dd x-text="detail.finished_at"></dd></template>
+          <template x-if="detail.duration_minutes"><dt>Duration</dt></template>
+          <template x-if="detail.duration_minutes"><dd x-text="detail.duration_minutes + ' min'"></dd></template>
+          <template x-if="detail.tokens_used"><dt>Tokens</dt></template>
+          <template x-if="detail.tokens_used"><dd x-text="detail.tokens_used?.toLocaleString()"></dd></template>
+          <template x-if="detail.stall_reason"><dt>Stall Reason</dt></template>
+          <template x-if="detail.stall_reason"><dd x-text="detail.stall_reason"></dd></template>
+          <template x-if="detail.stall_detail"><dt>Stall Detail</dt></template>
+          <template x-if="detail.stall_detail"><dd x-text="detail.stall_detail"></dd></template>
+          <template x-if="detail.run_policy"><dt>When to Run</dt></template>
+          <template x-if="detail.run_policy"><dd x-text="fmtRunPolicy(detail.run_policy)"></dd></template>
+          <template x-if="detail.eligible_at"><dt>Eligible At</dt></template>
+          <template x-if="detail.eligible_at"><dd x-text="detail.eligible_at"></dd></template>
+        </dl>
+
+        <template x-if="!editMode">
+          <div class="form-group" style="margin-top: 16px">
+            <label>Prompt</label>
+            <div class="context-box" style="margin-top: 6px; max-height: 320px">
+              <pre x-text="detail.prompt || '(no prompt)'"></pre>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="editMode">
+          <div style="margin-top: 16px; padding: 14px; background: var(--bg2);
+                      border: 1px solid var(--accent); border-radius: 8px">
+            <h3 style="font-size:13px; margin-bottom:12px; color: var(--accent);
+                       text-transform: uppercase; letter-spacing: 0.5px">
+              Editing — changes are not saved until you click Save
+            </h3>
+
+            <div class="form-group">
+              <label>Project Directory</label>
+              <div style="display:flex; gap:8px">
+                <input type="text" x-model="editForm.dir" style="flex:1">
+                <button @click="openFolderPicker('edit')" style="flex-shrink:0">Browse...</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Prompt</label>
+              <textarea x-model="editForm.prompt" rows="10"></textarea>
+            </div>
+
+            <div class="form-group">
+              <label>When to Run</label>
+              <select x-model="editForm.run_policy">
+                <option value="this_session">This session — run in the next burn</option>
+                <option value="next_session">Next session — skip the upcoming burn</option>
+                <option value="tonight">Tonight — first burn after 2:00 AM</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Level</label>
+                <select x-model="editForm.level">
+                  <option>observer</option><option>craftsman</option>
+                  <option>committer</option><option>deployer</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Priority</label>
+                <select x-model.number="editForm.priority">
+                  <option value="1">1 - Critical</option><option value="2">2 - High</option>
+                  <option value="3">3 - Normal</option><option value="4">4 - Low</option>
+                  <option value="5">5 - Idle</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Max Minutes</label>
+                <input type="number" x-model.number="editForm.max_minutes" min="1">
+              </div>
+              <div class="form-group" style="display:flex; align-items:end; padding-bottom:8px">
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
+                  <input type="checkbox" x-model="editForm.dry_run"> Dry Run
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Tags (comma-separated)</label>
+              <input type="text" x-model="editForm.tags">
+            </div>
+
+            <div class="form-group">
+              <label>Depends On (comma-separated task IDs)</label>
+              <input type="text" x-model="editForm.depends_on">
+            </div>
+
+            <div style="display:flex; gap:8px">
+              <button class="btn-primary" @click="saveEdit()">Save</button>
+              <button @click="cancelEdit()">Cancel</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Actions: hidden while editing so Save/Cancel are unambiguous. -->
+        <template x-if="!editMode">
+          <div class="actions">
+            <template x-if="detail._status === 'pending'">
+              <button class="btn-green" @click="runTask()" :disabled="taskRunning">Run This Task</button>
+            </template>
+            <template x-if="detail._status === 'pending'">
+              <button class="btn-primary" @click="startEdit()">Edit</button>
+            </template>
+            <template x-if="detail._status === 'pending'">
+              <button class="btn-amber" @click="moveToUnfinished()">Move to Unfinished</button>
+            </template>
+            <template x-if="detail._status === 'running'">
+              <button class="btn-danger" @click="cancelTask()">Cancel Task</button>
+            </template>
+            <template x-if="detail._status === 'running' && !taskRunning">
+              <button class="btn-green" @click="action('done')">Mark Done</button>
+            </template>
+            <template x-if="detail._status === 'running' && !taskRunning">
+              <button @click="action('fail')">Mark Failed</button>
+            </template>
+            <template x-if="detail._status === 'running' && !taskRunning">
+              <button @click="action('stall')">Mark Stalled</button>
+            </template>
+            <template x-if="detail._status === 'unfinished' || detail._status === 'failed'">
+              <button class="btn-primary" @click="action('retry')">Retry</button>
+            </template>
+            <button @click="loadContext()" x-text="showContext ? 'Hide Context' : 'View Context'"></button>
+            <template x-if="detail._status !== 'pending'">
+              <button @click="loadOutput()" x-text="showOutput ? 'Hide Output' : 'Terminal Output'"></button>
+            </template>
+            <button @click="openFiles()">Files</button>
+            <template x-if="detail._status !== 'running' || !taskRunning">
+              <button class="btn-danger" @click="removeTask()">Remove</button>
+            </template>
+          </div>
+        </template>
+
+        <!-- Context viewer -->
+        <template x-if="showContext">
+          <div class="context-box"><pre x-text="contextText"></pre></div>
+        </template>
+
+        <!-- Terminal output viewer -->
+        <template x-if="showOutput">
+          <div style="margin-top: 16px">
+            <h3 style="font-size: 14px; margin-bottom: 8px">Terminal Output</h3>
+            <div class="log-box output-scroll" style="max-height: 500px"><pre x-text="outputLines.join('\n') || 'No output recorded'"></pre></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Panel 2: file browser -->
+      <div class="panel panel-files"
+           :class="{ 'is-open': filePanel.open, 'is-active': activePanel === 'files' }">
+        <button @click="closeFiles()" style="margin-bottom: 12px">&larr; Back</button>
+        <h3 class="mono panel-path" x-text="filePanel.path"></h3>
+        <div x-show="filePanel.loading" class="panel-msg">Loading...</div>
+        <div x-show="filePanel.error" class="panel-msg" style="color: var(--red)"
+             x-text="filePanel.error"></div>
+        <div x-show="filePanel.truncated" class="panel-msg" style="color: var(--amber)">
+          Showing first 1000 entries
+        </div>
+        <div x-show="filePanel.parent" class="fb-dir-item"
+             @click="loadFiles(filePanel.parent)">
+          <span class="dir-icon">..</span>
+          <span style="color: var(--text2)">Parent directory</span>
+        </div>
+        <template x-for="e in filePanel.entries" :key="e.path">
+          <div class="fb-dir-item"
+               @click="e.type === 'dir' ? loadFiles(e.path) : viewFile(e)">
+            <span class="dir-icon"
+                  x-text="e.type === 'dir' ? '\u{1F4C1}' : '\u{1F4C4}'"></span>
+            <span x-text="e.name" style="flex: 1; word-break: break-all"></span>
+            <span class="fb-entry-meta"
+                  x-show="e.type === 'file'"
+                  x-text="e.denied ? 'denied' : fmtBytes(e.size)"></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- Panel 3: file viewer -->
+      <div class="panel panel-file-view"
+           :class="{ 'is-open': fileView !== null, 'is-active': activePanel === 'fileView' }">
+        <template x-if="fileView">
+          <div>
+            <button @click="closeFileView()" style="margin-bottom: 12px">&larr; Back</button>
+            <h3 class="mono panel-path" x-text="fileView.name"></h3>
+            <div class="fb-entry-meta" style="margin-bottom: 8px"
+                 x-text="(fileView.size != null ? fmtBytes(fileView.size) + ' \u00b7 ' : '') + fileView.path"></div>
+
+            <div x-show="fileView.loading" class="panel-msg">Loading...</div>
+            <div x-show="fileView.error" class="panel-msg" style="color: var(--red)"
+                 x-text="fileView.error"></div>
+
+            <template x-if="fileView.kind === 'text' && fileView.reason === 'ok'">
+              <pre class="file-text" x-text="fileView.content"></pre>
+            </template>
+            <template x-if="fileView.kind === 'text' && fileView.reason === 'too_large'">
+              <div class="file-msg">File too large to display (256 KB cap). Open locally.</div>
+            </template>
+            <template x-if="fileView.kind === 'text' && fileView.reason === 'binary'">
+              <div class="file-msg">Binary content detected. Cannot display.</div>
+            </template>
+            <template x-if="fileView.kind === 'image'">
+              <img :src="fileView.rawUrl" class="file-image" alt=""
+                   @error="fileView.error = 'Could not load image. Open locally.'">
+            </template>
+            <template x-if="fileView.kind === 'pdf'">
+              <embed :src="fileView.rawUrl" type="application/pdf" class="file-pdf">
+            </template>
+            <template x-if="fileView.reason === 'denied'">
+              <div class="file-msg">Permission denied.</div>
+            </template>
+            <template x-if="fileView.reason === 'not_regular'">
+              <div class="file-msg">Not a regular file (FIFO, socket, device, or broken symlink).</div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+    </div>
+  </template>
+
+  <!-- Add Task -->
+  <template x-if="view === 'add'">
+    <div>
+      <h2>Add Task</h2>
+      <div style="max-width: 600px; margin-top: 16px">
+        <div class="form-group">
+          <label>Project Directory</label>
+          <div style="display: flex; gap: 8px">
+            <input type="text" x-model="addForm.dir" placeholder="/Users/me/projects/my-app" style="flex: 1">
+            <button @click="openFolderPicker('add')" style="flex-shrink: 0">Browse...</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Prompt</label>
+          <textarea x-model="addForm.prompt" placeholder="Describe the task..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>When to Run</label>
+          <select x-model="addForm.run_policy">
+            <option value="this_session">This session — run in the next burn</option>
+            <option value="next_session">Next session — skip the upcoming burn</option>
+            <option value="tonight">Tonight — first burn after 2:00 AM</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Level</label>
+            <select x-model="addForm.level">
+              <option>observer</option><option selected>craftsman</option>
+              <option>committer</option><option>deployer</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Priority</label>
+            <select x-model="addForm.priority">
+              <option value="1">1 - Critical</option><option value="2">2 - High</option>
+              <option value="3" selected>3 - Normal</option><option value="4">4 - Low</option>
+              <option value="5">5 - Idle</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Max Minutes</label>
+            <input type="number" x-model.number="addForm.max_minutes" placeholder="120" min="1">
+          </div>
+          <div class="form-group" style="display: flex; align-items: end; padding-bottom: 8px">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer">
+              <input type="checkbox" x-model="addForm.dry_run"> Dry Run
+            </label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Tags (comma-separated)</label>
+          <input type="text" x-model="addForm.tags" placeholder="refactor, auth">
+        </div>
+        <div class="form-group">
+          <label>Depends On (comma-separated task IDs)</label>
+          <input type="text" x-model="addForm.depends_on" placeholder="">
+        </div>
+        <button class="btn-primary" @click="addTask()">Add Task</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Logs -->
+  <template x-if="view === 'logs'">
+    <div>
+      <h2>Logs</h2>
+      <div class="form-row" style="max-width: 500px; margin: 12px 0">
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" x-model="logDate" @change="loadLogs()">
+        </div>
+        <div class="form-group">
+          <label>Task ID (optional)</label>
+          <input type="text" x-model="logTaskId" @input.debounce.300ms="loadLogs()" placeholder="Filter by task ID">
+        </div>
+      </div>
+      <div class="log-box"><pre x-text="logLines.join('\n') || 'No log entries'"></pre></div>
+    </div>
+  </template>
+
+  <!-- Usage History -->
+  <template x-if="view === 'usage'">
+    <div>
+      <h2>Usage History</h2>
+      <div style="display: flex; gap: 6px; margin: 12px 0">
+        <template x-for="r in ['today','week','month','all']">
+          <button :class="{ active: usageRange === r }" @click="usageRange = r; $nextTick(() => renderUsageChart())" x-text="r === 'all' ? 'All' : r === 'month' ? 'This Month' : r === 'week' ? 'This Week' : 'Today'"></button>
+        </template>
+      </div>
+      <div style="margin: 16px 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 20px"
+           :style="(usageRange === 'all' || usageRange === 'month') ? 'overflow-x: auto' : ''">
+        <canvas id="usageChart" style="height: 300px" :style="(usageRange !== 'all' && usageRange !== 'month') ? 'width: 100%' : ''"></canvas>
+      </div>
+      <table style="margin-top: 16px">
+        <thead><tr><th>Time</th><th>Usage %</th><th>Resets In</th><th>Status</th></tr></thead>
+        <tbody>
+          <template x-for="r in usageData.slice().reverse()" :key="r.datetime">
+            <tr>
+              <td class="mono" style="font-size:12px" x-text="fmtTime(r.datetime)"></td>
+              <td>
+                <div style="display:flex; align-items:center; gap:8px">
+                  <div style="width:100px; height:8px; background:var(--bg); border-radius:4px; overflow:hidden">
+                    <div :style="'width:'+Math.min(r.usage_pct||0,100)+'%; height:100%; background:'+(r.usage_pct>80?'var(--red)':r.usage_pct>50?'var(--amber)':'var(--green)')+'; border-radius:4px'"></div>
+                  </div>
+                  <span x-text="(r.usage_pct ?? '?') + '%'" style="font-size:12px"></span>
+                </div>
+              </td>
+              <td style="font-size:12px" x-text="r.resets_in"></td>
+              <td><span class="badge" :class="r.status?.includes('BURN') ? 'badge-failed' : 'badge-done'"
+                        x-text="r.status || '?'" style="font-size:10px"></span></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+</div>
+
+<!-- Folder Picker Modal -->
+<template x-if="folderPicker.open">
+  <div class="modal-overlay" @click.self="folderPicker.open = false">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Choose Folder</h3>
+        <button @click="folderPicker.open = false" style="border: none; background: none; color: var(--text); font-size: 18px">&times;</button>
+      </div>
+      <div class="modal-path">
+        <input type="text" x-model="folderPicker.pathInput"
+               @keydown.enter="browseTo(folderPicker.pathInput)">
+        <button @click="browseTo(folderPicker.pathInput)" style="padding: 2px 8px; font-size: 11px">Go</button>
+      </div>
+      <div class="modal-body">
+        <div class="dir-item" x-show="folderPicker.parent" @click="browseTo(folderPicker.parent)">
+          <span class="dir-icon">..</span>
+          <span style="color: var(--text2)">Parent directory</span>
+        </div>
+        <template x-for="d in folderPicker.dirs" :key="d.path">
+          <div class="dir-item" @click="browseTo(d.path)">
+            <span class="dir-icon">&#x1F4C1;</span>
+            <span x-text="d.name"></span>
+          </div>
+        </template>
+        <div x-show="folderPicker.dirs.length === 0" style="padding: 20px 18px; color: var(--text2); font-size: 13px">
+          No subdirectories
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button @click="folderPicker.open = false">Cancel</button>
+        <button class="btn-primary" @click="selectFolder()">Select This Folder</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<!-- Toast -->
+<div class="toast" x-show="toast" x-transition x-text="toast"
+     @click="toast = ''" style="display: none"></div>
+
+<script>
+function app() {
+  return {
+    view: 'dashboard',
+    status: { runner: null, counts: {} },
+    checkingUsage: false,
+    tasks: [],
+    detail: {},
+    statusFilter: '',
+    showContext: false,
+    contextText: '',
+    showOutput: false,
+    outputLines: [],
+    resume: null,
+    showFirstMsg: false,
+    editMode: false,
+    editForm: {},
+    toast: '',
+    runnerActive: false,
+    taskRunning: false,
+    logDate: new Date().toISOString().slice(0, 10),
+    logTaskId: '',
+    logLines: [],
+    addForm: { dir: '', prompt: '', level: 'craftsman', priority: 3,
+               dry_run: false, tags: '', depends_on: '', max_minutes: null,
+               run_policy: 'this_session' },
+    folderPicker: { open: false, target: 'add', current: '', parent: null, dirs: [], pathInput: '' },
+    filePanel: { open: false, path: null, parent: null, entries: [], truncated: false,
+                 loading: false, error: null },
+    fileView: null,
+    // Monotonic across resets — never zeroed. Resetting would let a stale response
+    // from an earlier task switch collide with a new request that happens to land
+    // on the same token value.
+    _filePanelReqToken: 0,
+    _fileViewReqToken: 0,
+    sortKey: 'created',
+    sortAsc: false,
+    usageData: [],
+    usageRange: 'week',
+    _pollTimer: null,
+
+    async init() {
+      await this.loadStatus();
+      setInterval(() => this.loadStatus(), 5000);
+    },
+
+    get activePanel() {
+      if (this.fileView) return 'fileView';
+      if (this.filePanel.open) return 'files';
+      return 'detail';
+    },
+
+    get resumeStatus() {
+      // 'loading' | 'error' | 'empty' | 'loaded' — folds the resume-info
+      // request states into one symbol so the banner template stays flat.
+      if (!this.resume) return 'loading';
+      if (!this.resume.ok) return 'error';
+      if (!this.resume.last_user_message) return 'empty';
+      return 'loaded';
+    },
+
+    go(v) { this.view = v; this.showContext = false; this.contextText = '';
+            this.showOutput = false; this.outputLines = [];
+            this.editMode = false; this.editForm = {};
+            this._stopTaskPoll(); this._resetFileState(); },
+
+    // ── Time formatting ──
+    fmtTime(ts) {
+      if (!ts) return '';
+      try {
+        const d = new Date(ts);
+        if (isNaN(d)) return ts;
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      } catch(e) { return ts; }
+    },
+
+    fmtFullTime(ms) {
+      if (!ms) return '';
+      const d = new Date(ms);
+      if (isNaN(d)) return '';
+      return d.toLocaleString();
+    },
+
+    fmtCountdown(ms) {
+      if (ms == null || ms < 0) return '0s';
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    },
+
+    async checkUsageNow() {
+      this.checkingUsage = true;
+      try {
+        const r = await fetch('/api/check-usage', { method: 'POST' });
+        if (r.ok) {
+          this.status.runner = await r.json();
+          this.notify('Usage check complete');
+        } else {
+          this.notify('Check failed');
+        }
+      } catch (e) { this.notify('Check error: ' + e); }
+      finally { this.checkingUsage = false; }
+    },
+
+    // ── Sorting ──
+    sortBy(key) {
+      if (this.sortKey === key) { this.sortAsc = !this.sortAsc; }
+      else { this.sortKey = key; this.sortAsc = true; }
+    },
+
+    sortIcon(key) {
+      if (this.sortKey !== key) return '';
+      return this.sortAsc ? '\u25B2' : '\u25BC';
+    },
+
+    get sortedTasks() {
+      const k = this.sortKey;
+      const dir = this.sortAsc ? 1 : -1;
+      return [...this.tasks].sort((a, b) => {
+        let va = a[k] ?? '', vb = b[k] ?? '';
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+        va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+        return va < vb ? -dir : va > vb ? dir : 0;
+      });
+    },
+
+    notify(msg) { this.toast = msg; setTimeout(() => this.toast = '', 3000); },
+
+    async logout() {
+      try { await fetch('/logout', { method: 'POST' }); } catch(e) {}
+      location.href = '/login';
+    },
+
+    // ── Status ──
+    async loadStatus() {
+      try {
+        const r = await fetch('/api/status');
+        this.status = await r.json();
+        const rs = await fetch('/api/run-once/status');
+        const rj = await rs.json();
+        this.runnerActive = rj.running;
+      } catch(e) {}
+    },
+
+    // ── Task List ──
+    async loadTasks() {
+      const url = this.statusFilter ? `/api/tasks?status=${this.statusFilter}` : '/api/tasks';
+      const r = await fetch(url);
+      this.tasks = await r.json();
+    },
+
+    // ── Task Detail ──
+    async viewTask(id) {
+      const r = await fetch(`/api/tasks/${id}`);
+      if (!r.ok) { this.notify('Task not found'); return; }
+      this.detail = await r.json();
+      this._resetFileState();
+      this.showContext = false;
+      this.contextText = '';
+      this.showOutput = false;
+      this.outputLines = [];
+      this.resume = null;
+      this.showFirstMsg = false;
+      this.editMode = false;
+      this.editForm = {};
+      this.view = 'detail';
+      if (this.detail.session_id) this._loadResumeInfo(id);
+      await this._checkTaskRunning(id);
+      if (this.taskRunning) this._startTaskPoll(id);
+    },
+
+    async _loadResumeInfo(id) {
+      // Guard against stale responses landing after the user navigated to
+      // another task. Compare against the currently-displayed task id at
+      // resolve time, not the id captured at call time.
+      try {
+        const r = await fetch(`/api/tasks/${id}/resume-info`);
+        const j = await r.json();
+        if (this.detail.id !== id) return;
+        this.resume = { ok: r.ok, ...j };
+      } catch(e) {
+        if (this.detail.id !== id) return;
+        this.resume = { ok: false, error: 'fetch_failed', detail: String(e) };
+      }
+    },
+
+    copyText(s) {
+      try { navigator.clipboard.writeText(s); this.notify('Copied'); }
+      catch(e) {}
+    },
+
+    async _checkTaskRunning(id) {
+      try {
+        const r = await fetch(`/api/tasks/${id}/run-status`);
+        const j = await r.json();
+        this.taskRunning = j.running;
+      } catch(e) { this.taskRunning = false; }
+    },
+
+    _startTaskPoll(id) {
+      this._stopTaskPoll();
+      this.showOutput = true;
+      this._pollOutput(id);
+      this._pollTimer = setInterval(async () => {
+        await this._checkTaskRunning(id);
+        await this._pollOutput(id);
+        if (!this.taskRunning) {
+          this._stopTaskPoll();
+          // Refresh detail to show final state without resetting output
+          try {
+            const r = await fetch(`/api/tasks/${id}`);
+            if (r.ok) this.detail = await r.json();
+          } catch(e) {}
+          this.notify('Task finished');
+        }
+      }, 3000);
+    },
+
+    _stopTaskPoll() {
+      if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+      this.taskRunning = false;
+    },
+
+    async _pollOutput(id) {
+      const offset = this.outputLines.length;
+      try {
+        const r = await fetch(`/api/tasks/${id}/output?offset=${offset}`);
+        if (r.ok) {
+          const j = await r.json();
+          if (j.lines.length > 0) {
+            this.outputLines.push(...j.lines);
+            this.$nextTick(() => {
+              const box = document.querySelector('.output-scroll');
+              if (box) box.scrollTop = box.scrollHeight;
+            });
+          }
+        }
+      } catch(e) {}
+    },
+
+    // ── Edit mode ──
+    fmtRunPolicy(p) {
+      return ({
+        this_session: 'This session (run in next burn)',
+        next_session: 'Next session (skip upcoming burn)',
+        tonight: 'Tonight (after 2:00 AM local)',
+      })[p] || p;
+    },
+
+    startEdit() {
+      // Snapshot current values into a mutable form. Cancel restores the
+      // detail object (which we left untouched) so the user sees no change.
+      const d = this.detail;
+      this.editForm = {
+        dir: d.dir || '',
+        prompt: d.prompt || '',
+        level: d.level || 'craftsman',
+        priority: Number(d.priority || 3),
+        dry_run: !!d.dry_run,
+        tags: (d.tags || []).join(', '),
+        depends_on: (d.depends_on || []).join(', '),
+        max_minutes: d.budget?.max_minutes || 120,
+        run_policy: d.run_policy || 'this_session',
+      };
+      this.editMode = true;
+    },
+
+    cancelEdit() {
+      this.editMode = false;
+      this.editForm = {};
+    },
+
+    async saveEdit() {
+      const r = await fetch(`/api/tasks/${this.detail.id}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(this._serializeTaskForm(this.editForm)),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        this.notify(j.fields?.length ? `Saved (${j.fields.join(', ')})` : 'No changes');
+        this.editMode = false;
+        await this.viewTask(this.detail.id);
+      } else {
+        const e = await r.json(); this.notify(e.detail || 'Save failed');
+      }
+    },
+
+    _serializeTaskForm(f) {
+      const split = s => (s || '').split(',').map(x => x.trim()).filter(Boolean);
+      return {
+        dir: f.dir,
+        prompt: f.prompt,
+        level: f.level,
+        priority: Number(f.priority),
+        dry_run: !!f.dry_run,
+        tags: split(f.tags),
+        depends_on: split(f.depends_on),
+        max_minutes: Number(f.max_minutes) || null,
+        run_policy: f.run_policy,
+      };
+    },
+
+    // ── Move pending → unfinished ──
+    async moveToUnfinished() {
+      if (!confirm(`Move ${this.detail.id} to unfinished/? You can retry it later.`)) return;
+      const r = await fetch(`/api/tasks/${this.detail.id}/unfinish`, { method: 'POST' });
+      if (r.ok) {
+        this.notify('Moved to unfinished');
+        await this.viewTask(this.detail.id);
+      } else {
+        const e = await r.json(); this.notify(e.detail || 'Move failed');
+      }
+    },
+
+    // ── Run single task ──
+    async runTask() {
+      const r = await fetch(`/api/tasks/${this.detail.id}/run`, { method: 'POST' });
+      if (r.ok) {
+        this.notify('Task started');
+        this.taskRunning = true;
+        this._startTaskPoll(this.detail.id);
+        // Refresh detail to show running state without resetting output
+        setTimeout(async () => {
+          try {
+            const r2 = await fetch(`/api/tasks/${this.detail.id}`);
+            if (r2.ok) this.detail = await r2.json();
+          } catch(e) {}
+        }, 1000);
+      } else {
+        const e = await r.json(); this.notify(e.detail || 'Error');
+      }
+    },
+
+    // ── Cancel running task ──
+    async cancelTask() {
+      if (!confirm(`Cancel running task ${this.detail.id}? This will kill the subprocess.`)) return;
+      const r = await fetch(`/api/tasks/${this.detail.id}/cancel`, { method: 'POST' });
+      if (r.ok) {
+        this.notify('Task cancelled');
+        // Wait a moment for the executor to finalize, then refresh
+        setTimeout(() => this.viewTask(this.detail.id), 2000);
+      } else {
+        const e = await r.json();
+        this.notify(e.detail || 'Cancel failed');
+      }
+    },
+
+    // ── Lifecycle actions ──
+    async action(act) {
+      let body = {};
+      if (act === 'fail') {
+        const d = prompt('Failure detail:');
+        if (d === null) return;
+        body = { detail: d };
+      }
+      if (act === 'stall') {
+        const reason = prompt('Reason (checkpoint / dry_run_complete / uncertain):');
+        if (!reason) return;
+        const d = prompt('Detail:') || '';
+        body = { reason, detail: d };
+      }
+      const r = await fetch(`/api/tasks/${this.detail.id}/${act}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        this.notify(`${act}: ${this.detail.id}`);
+        try { await this.viewTask(this.detail.id); }
+        catch(e) { this.go('list'); this.loadTasks(); }
+      } else {
+        const e = await r.json(); this.notify(e.detail || 'Error');
+      }
+    },
+
+    async removeTask() {
+      if (!confirm(`Remove ${this.detail.id}?`)) return;
+      const r = await fetch(`/api/tasks/${this.detail.id}`, { method: 'DELETE' });
+      if (r.ok) { this.notify('Removed'); this.go('list'); this.loadTasks(); }
+    },
+
+    // ── Context viewer ──
+    async loadContext() {
+      this.showContext = !this.showContext;
+      if (this.showContext && !this.contextText) {
+        const r = await fetch(`/api/context/${this.detail.id}`);
+        this.contextText = await r.text();
+      }
+    },
+
+    async loadOutput() {
+      this.showOutput = !this.showOutput;
+      if (this.showOutput && this.outputLines.length === 0) {
+        const r = await fetch(`/api/tasks/${this.detail.id}/output`);
+        if (r.ok) {
+          const j = await r.json();
+          this.outputLines = j.lines || [];
+        }
+      }
+    },
+
+    // ── Add task ──
+    async addTask() {
+      if (!this.addForm.dir || !this.addForm.prompt) {
+        this.notify('Dir and prompt are required'); return;
+      }
+      const r = await fetch('/api/tasks', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(this._serializeTaskForm(this.addForm)),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        this.notify(`Added: ${j.id}`);
+        this.addForm = { dir: '', prompt: '', level: 'craftsman', priority: 3,
+                         dry_run: false, tags: '', depends_on: '', max_minutes: null,
+                         run_policy: 'this_session' };
+        this.go('list'); this.loadTasks();
+      } else {
+        const e = await r.json(); this.notify(e.detail || 'Error');
+      }
+    },
+
+    // ── Run all once ──
+    async runOnce() {
+      const r = await fetch('/api/run-once', { method: 'POST' });
+      if (r.ok) { this.notify('Runner started'); this.runnerActive = true; }
+      else { const e = await r.json(); this.notify(e.detail || 'Error'); }
+    },
+
+    // ── Logs ──
+    async loadLogs() {
+      const params = new URLSearchParams({ date: this.logDate });
+      if (this.logTaskId) params.set('task_id', this.logTaskId);
+      const r = await fetch(`/api/logs?${params}`);
+      const j = await r.json();
+      this.logLines = j.lines || [];
+    },
+
+    // ── Usage history ──
+    async loadUsage() {
+      const r = await fetch('/api/usage-history');
+      this.usageData = await r.json();
+      // Render chart after DOM updates
+      this.$nextTick(() => this.renderUsageChart());
+    },
+
+    _usageTimeRange() {
+      let start = 0, end = Date.now();
+      if (this.usageRange === 'today') {
+        const d = new Date(); d.setHours(0,0,0,0); start = d.getTime();
+        const e = new Date(d); e.setDate(e.getDate() + 1); end = e.getTime();
+      } else if (this.usageRange === 'week') {
+        const d = new Date(); d.setHours(0,0,0,0);
+        const day = d.getDay(); d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+        start = d.getTime();
+        const e = new Date(d); e.setDate(e.getDate() + 7); end = e.getTime();
+      } else if (this.usageRange === 'month') {
+        const d = new Date(); d.setHours(0,0,0,0); d.setDate(1);
+        start = d.getTime();
+        const e = new Date(d); e.setMonth(e.getMonth() + 1); end = e.getTime();
+      }
+      return { start, end };
+    },
+
+    _filterUsageData() {
+      const { start, end } = this._usageTimeRange();
+      return this.usageData
+        .filter(d => d.usage_pct !== null)
+        .map(d => ({ ...d, _ts: new Date(d.datetime).getTime() }))
+        .filter(d => !isNaN(d._ts) && d._ts >= start && d._ts <= end);
+    },
+
+    renderUsageChart() {
+      const canvas = document.getElementById('usageChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const containerRect = canvas.parentElement.getBoundingClientRect();
+      const data = this._filterUsageData();
+      const H = 300;
+
+      // For "all" and "month", set width based on day span (~1/5 screen per day)
+      const { start: rangeStart, end: rangeEnd } = this._usageTimeRange();
+      let W;
+      const scrollable = this.usageRange === 'all' || this.usageRange === 'month';
+      if (scrollable) {
+        const tStart = this.usageRange === 'all' && data.length ? data[0]._ts : rangeStart;
+        const tEnd = this.usageRange === 'all' && data.length ? data[data.length-1]._ts : rangeEnd;
+        const daySpan = (tEnd - tStart) / 86400000;
+        const perDay = containerRect.width / 5;
+        W = Math.max(containerRect.width, Math.ceil(daySpan) * perDay);
+        canvas.style.width = W + 'px';
+      } else {
+        W = containerRect.width;
+        canvas.style.width = '100%';
+      }
+
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.height = H + 'px';
+      ctx.scale(dpr, dpr);
+
+      const pad = { top: 20, right: 20, bottom: 40, left: 45 };
+      const cw = W - pad.left - pad.right, ch = H - pad.top - pad.bottom;
+      const tMin = this.usageRange === 'all' && data.length ? data[0]._ts : rangeStart;
+      const tMax = this.usageRange === 'all' && data.length ? data[data.length-1]._ts : rangeEnd;
+      const tRange = tMax - tMin || 1;
+      const timeX = (ts) => pad.left + ((ts - tMin) / tRange) * cw;
+
+      // Background
+      ctx.fillStyle = '#1a1d27';
+      ctx.fillRect(0, 0, W, H);
+
+      // Grid lines
+      ctx.strokeStyle = '#2e3140'; ctx.lineWidth = 1;
+      for (let pct = 0; pct <= 100; pct += 25) {
+        const y = pad.top + ch - (pct / 100) * ch;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#8b8fa3'; ctx.font = '11px system-ui';
+        ctx.fillText(pct + '%', 5, y + 4);
+      }
+
+      // X-axis labels — evenly spaced by time
+      ctx.fillStyle = '#8b8fa3'; ctx.font = '10px system-ui';
+      const labelCount = Math.max(4, Math.min(12, Math.floor(W / 100)));
+      for (let li = 0; li <= labelCount; li++) {
+        const ts = tMin + (li / labelCount) * tRange;
+        const x = timeX(ts);
+        const label = this.fmtTime(new Date(ts).toISOString());
+        ctx.save(); ctx.translate(x, H - 5); ctx.rotate(-0.4);
+        ctx.fillText(label, 0, 0); ctx.restore();
+      }
+
+      if (data.length === 0) {
+        ctx.fillStyle = '#8b8fa3'; ctx.font = '13px system-ui';
+        ctx.fillText('No data for this range', W/2 - 60, H/2);
+        return;
+      }
+
+      // Plot line — skip gaps, keep line connected
+      ctx.beginPath();
+      ctx.strokeStyle = '#6c8aff'; ctx.lineWidth = 2;
+      data.forEach((d, i) => {
+        const x = timeX(d._ts);
+        const y = pad.top + ch - (d.usage_pct / 100) * ch;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Fill area under line
+      const lastPt = data[data.length - 1];
+      ctx.lineTo(timeX(lastPt._ts), pad.top + ch);
+      ctx.lineTo(timeX(data[0]._ts), pad.top + ch);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(108,138,255,0.1)'; ctx.fill();
+
+      // Dots for each datapoint
+      data.forEach((d) => {
+        const x = timeX(d._ts);
+        const y = pad.top + ch - (d.usage_pct / 100) * ch;
+        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = d.usage_pct >= 80 ? '#ef4444' : d.usage_pct >= 50 ? '#f59e0b' : '#6c8aff';
+        ctx.fill();
+      });
+
+    },
+
+    // ── Folder picker ──
+    // target is 'add' or 'edit'; selectFolder() writes back to the matching form.
+    async openFolderPicker(target) {
+      this.folderPicker.target = target;
+      const initial = (target === 'edit' ? this.editForm.dir : this.addForm.dir) || '~';
+      await this.browseTo(initial);
+      this.folderPicker.open = true;
+    },
+
+    async browseTo(path) {
+      const r = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+      if (!r.ok) { this.notify('Cannot browse: ' + path); return; }
+      const j = await r.json();
+      this.folderPicker.current = j.current;
+      this.folderPicker.parent = j.parent;
+      this.folderPicker.dirs = j.dirs;
+      this.folderPicker.pathInput = j.current;
+    },
+
+    selectFolder() {
+      const dir = this.folderPicker.current;
+      if (this.folderPicker.target === 'edit') this.editForm.dir = dir;
+      else this.addForm.dir = dir;
+      this.folderPicker.open = false;
+    },
+
+    // ── File browser ──
+    // Request tokens are monotonic across resets — zeroing them would let a
+    // stale response from a previous task collide with a new request that
+    // happens to land on the same token value.
+    _resetFileState() {
+      this.filePanel = { open: false, path: null, parent: null,
+                         entries: [], truncated: false, loading: false,
+                         error: null };
+      this.fileView = null;
+    },
+
+    openFiles() {
+      const start = this.detail?.resolved_dir || this.detail?.dir;
+      if (!start) return this.notify('No directory set for this task');
+      this.filePanel.open = true;
+      this.loadFiles(start);
+    },
+
+    async loadFiles(path) {
+      const token = ++this._filePanelReqToken;
+      const fresh = () => token === this._filePanelReqToken;
+      this.filePanel.loading = true;
+      this.filePanel.error = null;
+      // Clear stale listing so users can't click entries from the old dir
+      // while the new one loads.
+      this.filePanel.entries = [];
+      this.filePanel.parent = null;
+      this.filePanel.truncated = false;
+      try {
+        const r = await fetch(`/api/files/list?path=${encodeURIComponent(path)}`);
+        if (!fresh()) return;
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          if (!fresh()) return;
+          this.filePanel.error = e.detail || `Error ${r.status}`;
+          return;
+        }
+        const j = await r.json();
+        if (!fresh()) return;  // re-check: another load may have started during json parse
+        this.filePanel.path = j.path;
+        this.filePanel.parent = j.parent;
+        this.filePanel.entries = j.entries;
+        this.filePanel.truncated = j.truncated;
+      } catch (e) {
+        if (fresh()) this.filePanel.error = String(e);
+      } finally {
+        if (fresh()) this.filePanel.loading = false;
+      }
+    },
+
+    async viewFile(entry) {
+      const token = ++this._fileViewReqToken;
+      this.fileView = {
+        name: entry.name, path: entry.path, kind: entry.kind, size: entry.size,
+        reason: null, content: null, rawUrl: null,
+        loading: true, error: null,
+      };
+      if (entry.kind === 'image' || entry.kind === 'pdf') {
+        this.fileView.rawUrl = `/api/files/raw?path=${encodeURIComponent(entry.path)}`;
+        this.fileView.reason = 'ok';
+        this.fileView.loading = false;
+        return;
+      }
+      const fresh = () => token === this._fileViewReqToken && this.fileView;
+      try {
+        const r = await fetch(`/api/files/read?path=${encodeURIComponent(entry.path)}`);
+        if (!fresh()) return;
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          if (!fresh()) return;
+          this.fileView.error = e.detail || `Error ${r.status}`;
+          return;
+        }
+        const j = await r.json();
+        if (!fresh()) return;  // re-check: another viewFile may have started during json parse
+        this.fileView.reason = j.reason;
+        this.fileView.content = j.content;
+        this.fileView.size = j.size;
+      } catch (e) {
+        if (fresh()) this.fileView.error = String(e);
+      } finally {
+        if (fresh()) this.fileView.loading = false;
+      }
+    },
+
+    closeFileView() { this.fileView = null; },
+    closeFiles()    { this.fileView = null; this.filePanel.open = false; },
+
+    fmtBytes(n) {
+      if (n == null) return '';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(1) + ' MB';
+    },
+  };
+}
+</script>
+</body>
+</html>

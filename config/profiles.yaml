@@ -1,0 +1,56 @@
+profiles:
+  observer:
+    caps:
+      - read_files
+      - run_shell_readonly
+      - git_read
+      - write_agent_memory
+      - write_briefing
+      - write_checkpoint
+
+  craftsman:
+    caps:
+      - read_files
+      - write_files
+      - delete_files
+      - run_shell
+      - git_read
+      - net_packages
+      - write_agent_memory
+      - write_agent_proposed
+      - write_briefing
+      - write_checkpoint
+      - write_dryrun
+
+  committer:
+    caps:
+      - read_files
+      - write_files
+      - delete_files
+      - run_shell
+      - git_read
+      - git_stage_commit
+      - net_packages
+      - write_agent_memory
+      - write_agent_proposed
+      - write_briefing
+      - write_checkpoint
+      - write_dryrun
+
+  deployer:
+    caps:
+      - read_files
+      - write_files
+      - delete_files
+      - run_shell
+      - run_deploy_scripts
+      - git_read
+      - git_stage_commit
+      - git_push
+      - net_packages
+      - net_full
+      - write_agent_memory
+      - write_agent_proposed
+      - write_briefing
+      - write_checkpoint
+      - write_dryrun
