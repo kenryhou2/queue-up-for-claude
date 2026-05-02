@@ -25,3 +25,8 @@ usage_history.csv
 
 # Secrets
 .env
+
+# .agent
+.agent/briefings
+.agent/proposed
+.agent/memory/episodic.jsonl

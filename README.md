@@ -6,6 +6,12 @@ You queue tasks against your projects. The runner sits idle most of the day and 
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by Anthropic. Reads your Claude.ai plan usage by calling the same web endpoints the claude.ai UI uses with your `sessionKey` cookie. **This may violate Anthropic's Terms of Service.** See [Disclaimer](#disclaimer). If the cookie API ever stops working, this tool stops working — there is no browser-scraping fallback.
 
+> ⚠️ **Full-disk file access.** This tool can read any file on your computer that your user account can read. Two reasons:
+> 1. The dashboard's file-browser API (`/api/files/list|read|raw`) is **not sandboxed** — it accepts any absolute path and resolves it via the OS. Anyone who can reach the dashboard can browse your whole home directory. Keep it on `127.0.0.1` / Tailscale and put a password on it before exposing it.
+> 2. Each task runs `claude -p --dangerously-skip-permissions`, so the Claude Code subprocess has no per-file permission prompts — it can read/write anywhere your user can.
+>
+> **Nothing is uploaded to the author and there is no telemetry.** The session key, usage history, task prompts, and logs all stay on your machine. The two outbound destinations are the ones you'd expect: `claude.ai` (for usage checks, with your cookie) and Anthropic's API (whatever `claude -p` sends as part of running your tasks — prompts and any files it reads, same as using Claude Code directly). See [Data storage](#data-storage).
+
 ---
 
 ## Why
@@ -145,7 +151,8 @@ queue-up-for-claude reads your Claude.ai plan usage by calling the same web API 
 - Usage history is appended to `usage_history.csv` in the project directory — timestamps + percentages only, no prompts or chat content.
 - Task prompts and per-task `claude -p` output live in `queue/` and `logs/`.
 - Strings sent to the dashboard pass through a redactor that strips `sk-ant-...` keys and email addresses (defense in depth).
-- **No data is sent to third-party servers or collected by the author.**
+- **No data is sent to the author and there is no telemetry.** Outbound traffic only goes to `claude.ai` (usage check, authenticated with your cookie) and Anthropic's API (whatever `claude -p` sends while running your tasks — prompts and the contents of any files it reads, same as using Claude Code directly).
+- The dashboard's file browser API is **not path-scoped**: it can list and read any file the process user can read. Treat it as you would a remote shell — bind to loopback / Tailscale, set a password, do not expose publicly.
 
 See [docs/security.md](docs/security.md) for the full security model and known limitations (notably: the file-browser API is not sandboxed — fine for loopback / Tailscale, not safe to expose publicly without scoping).
 
