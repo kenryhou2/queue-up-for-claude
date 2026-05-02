@@ -1,94 +1,45 @@
-"""Locate and summarize Claude Code session transcripts on disk.
+"""Locate and summarize Codex session transcripts on disk.
 
 Used by the web dashboard to show which conversation a queued task will
-resume. Read-only — the queue skill stays the only writer of session_id.
-
-Slug rule (verified empirically against ~/.claude/projects/):
-  Claude encodes a cwd by replacing every non-[A-Za-z0-9-] char with '-'.
-  Leading '/' becomes a leading '-'. Dots become dashes. Existing hyphens
-  in the path are preserved as-is, which makes decode genuinely ambiguous —
-  so we never decode, we only encode and look up.
+resume. Read-only — the queue only stores session_id in task YAML.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
-_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
 
-# Head + tail reads bound the cost on long transcripts. Head finds the first
-# user message; tail finds the last. A typical Claude session jsonl is
-# 100KB-2MB; transcripts past that exist for long /resume threads.
+CODEX_HOME = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+_SESSIONS_DIR = CODEX_HOME / 'sessions'
+_STATE_DB = CODEX_HOME / 'state_5.sqlite'
 _HEAD_BYTES = 64 * 1024
 _HEAD_LINES = 100
 _TAIL_BYTES = 128 * 1024
 _TAIL_LINES = 200
 _MSG_CHARS = 300
+_META_SCAN_LINES = 50
 
-# Cap on how many leading JSONL rows to scan when extracting `cwd` for the
-# integrity check. Real transcripts record cwd within the first 3-5 rows;
-# 50 is generous for transcripts with extra meta/snapshot lines up front.
-_CWD_SCAN_LINES = 50
-
-# Used to gate filesystem lookups — the session_id comes from a YAML field
-# the queue skill writes, but the YAML is also editable by users, so an
-# invalid id (e.g. "../../etc/passwd") must be rejected before path joins.
 _SESSION_ID_RE = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
     re.IGNORECASE,
+)
+
+_SYNTHETIC_PREFIXES = (
+    'You have been resumed by codex-queue',
+    'You have been started by codex-queue',
 )
 
 
 def is_valid_session_id(session_id: str) -> bool:
     return bool(_SESSION_ID_RE.match(session_id or ''))
 
-# Synthetic prefixes the executor injects when resuming/spawning a task — these
-# are not the human's original prompt and should be skipped when picking the
-# first/last user message.
-_SYNTHETIC_PREFIXES = (
-    'You have been resumed by queue-worker',
-    'You have been started by queue-worker',
-)
-
-
-def slugify_cwd(abs_path: str) -> str:
-    """Encode a cwd the way Claude encodes it under ~/.claude/projects/."""
-    return re.sub(r'[^A-Za-z0-9-]', '-', abs_path)
-
-
-def _read_first_cwd(path: Path) -> Optional[str]:
-    """Scan the head of a JSONL transcript for the first `cwd` field.
-    Bounded to _CWD_SCAN_LINES so a malformed transcript can't cost us a
-    full file read. Returns None if no cwd is found or the file is unreadable.
-    Opens with utf-8-sig so a leading BOM doesn't poison the first json.loads."""
-    try:
-        with path.open('r', encoding='utf-8-sig', errors='replace') as f:
-            for i, line in enumerate(f):
-                if i >= _CWD_SCAN_LINES:
-                    return None
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                cwd = obj.get('cwd')
-                if isinstance(cwd, str) and cwd:
-                    return cwd
-    except OSError:
-        return None
-    return None
-
 
 def _cwds_match(transcript_cwd: str, resolved_dir: str) -> bool:
-    """True if `transcript_cwd` (recorded by Claude) refers to the same
-    directory as `resolved_dir` (already passed through expand_path).
-    Handles macOS /tmp ↔ /private/tmp symlink-resolution mismatches via
-    a fallback expand_path comparison."""
     if transcript_cwd == resolved_dir:
         return True
     try:
@@ -98,80 +49,108 @@ def _cwds_match(transcript_cwd: str, resolved_dir: str) -> bool:
         return False
 
 
-def find_transcript(resolved_dir: str, session_id: str) -> Optional[Path]:
-    """Return the JSONL transcript path for (cwd, session_id), or None.
+def _read_session_meta(path: Path) -> dict[str, Any]:
+    try:
+        with path.open('r', encoding='utf-8-sig', errors='replace') as f:
+            for i, line in enumerate(f):
+                if i >= _META_SCAN_LINES:
+                    return {}
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get('type') == 'session_meta':
+                    payload = obj.get('payload')
+                    return payload if isinstance(payload, dict) else {}
+    except OSError:
+        return {}
+    return {}
 
-    Strategy: try the slug-derived path first (covers >99% of cases), then
-    fall back to scanning ~/.claude/projects/*/<uuid>.jsonl for slug
-    edge-cases (symlinks, unusual unicode, future Claude encoding changes).
-    EVERY match is verified against the transcript's recorded `cwd` field
-    before being accepted, so a slug collision or mistyped session_id can't
-    surface a different project's conversation.
 
-    Returns None for malformed session_ids (path-traversal guard).
-    """
-    if not is_valid_session_id(session_id):
+def _candidate_from_db(resolved_dir: str, session_id: str) -> Optional[Path]:
+    if not _STATE_DB.exists():
         return None
-
-    direct = _PROJECTS_DIR / slugify_cwd(resolved_dir) / f'{session_id}.jsonl'
-    if direct.exists():
-        cwd = _read_first_cwd(direct)
-        if cwd is None or _cwds_match(cwd, resolved_dir):
-            # cwd is None for empty/meta-only transcripts where Claude hasn't
-            # recorded a cwd yet — accept under the slug match (the directory
-            # name itself is the only signal we have, and we got there via
-            # the deterministic encode of resolved_dir).
-            return direct
-
-    if not _PROJECTS_DIR.exists():
+    try:
+        con = sqlite3.connect(f'file:{_STATE_DB}?mode=ro', uri=True)
+    except sqlite3.Error:
         return None
-    for d in _PROJECTS_DIR.iterdir():
-        if not d.is_dir():
+    try:
+        row = con.execute(
+            'select rollout_path, cwd from threads where id = ?',
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    if not row:
+        return None
+    rollout_path, cwd = row
+    if not isinstance(rollout_path, str) or not isinstance(cwd, str):
+        return None
+    if not _cwds_match(cwd, resolved_dir):
+        return None
+    path = Path(rollout_path).expanduser()
+    return path if path.exists() else None
+
+
+def _candidate_from_scan(resolved_dir: str, session_id: str) -> Optional[Path]:
+    if not _SESSIONS_DIR.exists():
+        return None
+    pattern = f'*{session_id}.jsonl'
+    for candidate in _SESSIONS_DIR.glob(f'**/{pattern}'):
+        meta = _read_session_meta(candidate)
+        cwd = meta.get('cwd')
+        sid = meta.get('id')
+        if sid != session_id:
             continue
-        candidate = d / f'{session_id}.jsonl'
-        if not candidate.exists():
-            continue
-        cwd = _read_first_cwd(candidate)
-        # On the fallback path the cwd MUST be present and match — without
-        # it we have no way to confirm we found the right project.
-        if cwd and _cwds_match(cwd, resolved_dir):
+        if isinstance(cwd, str) and _cwds_match(cwd, resolved_dir):
             return candidate
     return None
 
 
-def project_dir_for(resolved_dir: str) -> Path:
-    """Where the transcript dir would live if it existed."""
-    return _PROJECTS_DIR / slugify_cwd(resolved_dir)
+def find_transcript(resolved_dir: str, session_id: str) -> Optional[Path]:
+    """Return the Codex JSONL transcript path for (cwd, session_id), or None."""
+    if not is_valid_session_id(session_id):
+        return None
+    return (
+        _candidate_from_db(resolved_dir, session_id)
+        or _candidate_from_scan(resolved_dir, session_id)
+    )
+
+
+def project_dir_for(_resolved_dir: str) -> Path:
+    """Directory where Codex JSONL transcripts are normally stored."""
+    return _SESSIONS_DIR
+
+
+def _content_to_text(content) -> Optional[str]:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get('text'), str):
+            parts.append(item['text'])
+    return '\n'.join(parts) if parts else None
 
 
 def _extract_user_text(obj: dict) -> Optional[str]:
-    """If `obj` is a human user message, return its plain text. Else None.
-
-    Skips:
-    - sidechain entries (subagent traffic)
-    - tool results / system messages (role != 'user')
-    - synthetic kick prompts injected by the executor
-    """
-    if obj.get('type') != 'user':
+    if obj.get('type') != 'response_item':
         return None
-    if obj.get('isSidechain') is True:
+    payload = obj.get('payload')
+    if not isinstance(payload, dict) or payload.get('role') != 'user':
         return None
-    msg = obj.get('message')
-    if not isinstance(msg, dict) or msg.get('role') != 'user':
-        return None
-    content = msg.get('content')
-    text: Optional[str] = None
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list) and content:
-        first = content[0]
-        if isinstance(first, dict) and isinstance(first.get('text'), str):
-            text = first['text']
+    text = _content_to_text(payload.get('content'))
     if not text:
         return None
-    if any(text.startswith(p) for p in _SYNTHETIC_PREFIXES):
+    stripped = text.strip()
+    if stripped.startswith('<environment_context>'):
         return None
-    return text
+    if any(stripped.startswith(p) for p in _SYNTHETIC_PREFIXES):
+        return None
+    return stripped
 
 
 def _trim(text: str) -> str:
@@ -179,7 +158,6 @@ def _trim(text: str) -> str:
 
 
 def _scan_for_user_messages(lines: list[str]) -> tuple[Optional[str], Optional[str], int]:
-    """Walk JSONL lines, return (first, last, count) of human user messages."""
     first: Optional[str] = None
     last: Optional[str] = None
     count = 0
@@ -202,7 +180,6 @@ def _scan_for_user_messages(lines: list[str]) -> tuple[Optional[str], Optional[s
 
 
 def _read_head(path: Path) -> list[str]:
-    """First _HEAD_LINES (or _HEAD_BYTES, whichever first) of a JSONL file."""
     out: list[str] = []
     bytes_read = 0
     with path.open('r', encoding='utf-8', errors='replace') as f:
@@ -215,8 +192,6 @@ def _read_head(path: Path) -> list[str]:
 
 
 def _read_tail(path: Path) -> list[str]:
-    """Last _TAIL_BYTES of a file as line list. Drops the first (possibly
-    truncated) line of the chunk to avoid yielding a partial JSONL row."""
     with path.open('rb') as f:
         f.seek(0, 2)
         size = f.tell()
@@ -228,34 +203,23 @@ def _read_tail(path: Path) -> list[str]:
     text = chunk.decode('utf-8', errors='replace')
     lines = text.splitlines()
     if start > 0 and lines:
-        # First line was likely cut mid-record by the seek; drop it.
         lines = lines[1:]
     return lines[-_TAIL_LINES:]
 
 
 def summarize_session(path: Path) -> dict[str, Any]:
-    """Read head + tail of a transcript and return a summary dict.
-
-    For short files head and tail overlap completely — that's fine, we
-    dedupe on identity. For long files (multi-MB resume threads), the
-    tail pass picks up the genuinely-last user message so the dashboard
-    preview reflects what the user most recently said.
-    """
+    """Read head + tail of a transcript and return a dashboard summary."""
     head_lines = _read_head(path)
     first, head_last, head_count = _scan_for_user_messages(head_lines)
 
     file_size = path.stat().st_size
     if file_size <= _HEAD_BYTES:
-        # Whole file fit in head — head_last IS the conversation last.
         last = head_last
         msg_count = head_count
     else:
         tail_lines = _read_tail(path)
         _, tail_last, _ = _scan_for_user_messages(tail_lines)
         last = tail_last or head_last
-        # message_count is approximate on long files (head + tail may overlap
-        # or skip the middle). Document by rounding up: we know there are at
-        # least this many.
         msg_count = head_count
 
     return {

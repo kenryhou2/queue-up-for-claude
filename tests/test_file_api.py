@@ -1,7 +1,6 @@
 """Integration tests for /api/files/* endpoints."""
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,7 +15,7 @@ def _disable_auth():
 
 @pytest.fixture
 def client():
-    os.environ.pop("QUEUE_WORKER_PASSWORD", None)
+    os.environ.pop("CODEX_QUEUE_PASSWORD", None)
     from queue_worker.web import app
     return TestClient(app, raise_server_exceptions=False)
 

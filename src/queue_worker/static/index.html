@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>queue-worker</title>
+<title>codex-queue</title>
 <script>
 // Redirect to /login on 401 from any fetch (session expired)
 (() => {
@@ -229,7 +229,7 @@ tr:hover { background: var(--bg2); cursor: pointer; }
 
 <!-- Sidebar -->
 <div class="sidebar">
-  <h1>queue-worker</h1>
+  <h1>codex-queue</h1>
   <button :class="{ active: view === 'dashboard' }" @click="go('dashboard')">Dashboard</button>
   <button :class="{ active: view === 'list' }" @click="go('list'); loadTasks()">Tasks</button>
   <button :class="{ active: view === 'add' }" @click="go('add')">Add Task</button>
@@ -310,7 +310,7 @@ tr:hover { background: var(--bg2); cursor: pointer; }
               <td class="mono">
                 <span x-text="t.id"></span>
                 <span x-show="t.session_id" class="badge badge-resume"
-                      title="Resumes a Claude conversation">&#x21BB; RESUME</span>
+                      title="Resumes a Codex conversation">&#x21BB; RESUME</span>
               </td>
               <td><span class="badge" :class="'badge-' + t._status" x-text="t._status"></span></td>
               <td x-text="t.level || '?'"></td>
@@ -348,7 +348,7 @@ tr:hover { background: var(--bg2); cursor: pointer; }
 
         <template x-if="detail.session_id">
           <div class="resume-banner">
-            <div class="label">&#x21BB; Resumes Claude session</div>
+            <div class="label">&#x21BB; Resumes Codex session</div>
             <template x-if="resumeStatus === 'loading'">
               <div class="body" style="color:var(--text2)">Loading transcript...</div>
             </template>

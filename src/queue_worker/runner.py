@@ -1,4 +1,4 @@
-"""Queue-worker runner.
+"""codex-queue runner.
 
 State machine:
   chilling  → check usage at HH:00 (top of every hour);
@@ -36,7 +36,7 @@ from .task import Task, augment_task, now_iso, parse_task
 from .lock import recover_stale_locks, release_task_lock, RUNNING_DIR
 from .queue_ops import (get_pending_tasks, resolve_run_order, move_task,
                         augment_stall, begin_task)
-from .injector import cleanup_claude_md, BackupInfo
+from .injector import cleanup_codex_md, BackupInfo
 from .executor import execute_task, ExecuteResult
 from .logger import TaskLogger
 from .usage_check import BURN_USAGE_THRESHOLD_PCT, BURN_RESET_WINDOW_MIN
@@ -74,12 +74,15 @@ class RunnerState:
     last_anchor_kind: Optional[str] = None             # diagnostic
     last_anchor_at: Optional[float] = None             # diagnostic
     last_check_error_code: Optional[str] = None        # stable code for /api/status
+<<<<<<< HEAD
+=======
+    last_check_backend: Optional[str] = None
+>>>>>>> 160762e (editing for codex)
 
 
 _runner_state = RunnerState()
 _state_lock = threading.Lock()
-_usage_check_lock = threading.Lock()   # serializes usage checks (prevents concurrent
-                                       # `claude -p "hi"` kicks and CSV row interleave)
+_usage_check_lock = threading.Lock()   # serializes usage checks and CSV writes
 _loop_wake = threading.Event()         # set on state change → wakes the runner loop
 
 # Pending one-shot reset-anchored checks, guarded by _state_lock. Always read/
@@ -110,8 +113,8 @@ ANCHOR_DRIFT_TOLERANCE_S = 15 * 60
 # the next successful check re-anchors as cold_start.
 ANCHOR_STALE_GRACE_S = 30 * 60
 
-# An anchor more than 6h ahead is impossible (Claude sessions are 5h) and
-# means parse error or clock skew — clamp to None.
+# An anchor more than 6h ahead is implausible for the default 5h usage window
+# and usually means provider parse error or clock skew — clamp to None.
 ANCHOR_MAX_FUTURE_S = 6 * 60 * 60
 
 # A check that fires when now > anchor + this is internally relabelled
@@ -530,12 +533,12 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
         return False
 
     try:
-        log.info(f'checking Claude usage (kind={kind})...')
+        log.info(f'checking Codex usage (kind={kind})...')
         try:
             from .usage_check import check_usage_once
             result = check_usage_once(log_fn=log.info)
         except Exception as e:
-            from .usage_check_http import redact
+            from .usage_check_command import redact
             err = redact(str(e))
             log.error(f'usage check failed: {err}')
             _update_state(
@@ -557,8 +560,7 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
 
         # Build the field updates to apply atomically below.
         # error_code and backend come from the dispatcher (usage_check.py); the
-        # HTTP backend module already redacts session keys + emails before they
-        # reach UsageCheckResult.error.
+        # command backend redacts likely secrets before they reach result.error.
         fields: dict = {
             'last_check_at': now,
             'last_check_pct': result.pct,
@@ -648,7 +650,7 @@ def start_runner(log: TaskLogger,
     tick_seconds: how often the burn loop wakes to check the burn deadline / run
         the next ready task. The default is fine for production; tests override it.
     """
-    log.info('queue-worker started')
+    log.info('codex-queue started')
     _load_persisted_state()
     _recover_stale(log)
     from .queue_ops import reconcile_filenames
@@ -764,17 +766,17 @@ def _recover_stale(log: TaskLogger) -> None:
     for s in stale:
         log.warn(f'  stale: {s.task_id} (pid {s.pid} dead)')
 
-        if s.claude_md_written and s.project_dir:
+        if s.codex_md_written and s.project_dir:
             backup = BackupInfo(
                 had_original=s.backed_up_original,
-                backup_path=(Path(s.project_dir) / f'CLAUDE.md.queue-worker-bak-{s.pid}')
+                backup_path=(Path(s.project_dir) / f'CODEX.md.queue-worker-bak-{s.pid}')
                              if s.backed_up_original else None,
             )
             try:
-                cleanup_claude_md(s.project_dir, backup)
-                log.info(f'  cleaned up CLAUDE.md for {s.task_id}')
+                cleanup_codex_md(s.project_dir, backup)
+                log.info(f'  cleaned up CODEX.md for {s.task_id}')
             except Exception as e:
-                log.error(f'  failed to clean CLAUDE.md for {s.task_id}: {e}')
+                log.error(f'  failed to clean CODEX.md for {s.task_id}: {e}')
 
         running_yaml = RUNNING_DIR / f'{s.task_id}.yaml'
         if running_yaml.exists():

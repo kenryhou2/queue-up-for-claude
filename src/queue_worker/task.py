@@ -34,7 +34,7 @@ class Task:
     tags: list[str] = field(default_factory=list)
     budget: TaskBudget = field(default_factory=TaskBudget)
     caps_override: CapsOverride = field(default_factory=CapsOverride)
-    session_id: Optional[str] = None       # Claude session UUID to resume (claude --resume <id> -p ...)
+    session_id: Optional[str] = None       # Codex session UUID to resume
 
     # ── scheduling (set at create time, immutable thereafter) ──
     run_policy: Optional[str] = None       # 'this_session' | 'next_session' | 'tonight'

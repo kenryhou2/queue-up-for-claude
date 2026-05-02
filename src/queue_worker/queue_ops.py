@@ -6,6 +6,8 @@ from typing import Optional
 
 import yaml
 
+from .config import get_env
+
 # Serializes any operation that mutates a pending task's filesystem location
 # OR its YAML contents. Held by:
 #   - begin_task (pending → running rename)
@@ -34,9 +36,18 @@ VALID_RUN_POLICIES = {
 # local timezone. At 03:00 → tomorrow 02:00. At 01:00 → today 02:00.
 TONIGHT_HOUR_LOCAL = 2
 
-# Claude usage sessions are a fixed 5-hour window. Used as a fallback when no
-# usage check has populated runner state yet.
-SESSION_LENGTH_MINUTES = 300
+DEFAULT_USAGE_WINDOW_MINUTES = 300
+
+
+def _fallback_window_minutes() -> int:
+    raw = (get_env('CODEX_QUEUE_FALLBACK_WINDOW_MINUTES') or '').strip()
+    if not raw:
+        return DEFAULT_USAGE_WINDOW_MINUTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_USAGE_WINDOW_MINUTES
+    return value if value > 0 else DEFAULT_USAGE_WINDOW_MINUTES
 
 # Buffer added past a computed session-end so we don't fire literally at the
 # instant of reset (the new session needs a moment to actually open).
@@ -58,7 +69,8 @@ def compute_eligible_at(policy: Optional[str], runner_state: dict,
         # If the most recent check errored, `last_check_at` is fresh but the
         # pct/reset fields retain stale values from an earlier success. Using
         # them would schedule the task minutes from now instead of ~5h out.
-        # Fall back to now+5h whenever we can't trust the cached reset.
+        # Fall back to a default usage window whenever we can't trust the
+        # cached reset.
         check_errored = bool(runner_state.get('last_check_error'))
         if (last_check_at and reset_minutes is not None and not check_errored):
             target = (datetime.fromtimestamp(last_check_at, tz=timezone.utc)
@@ -68,9 +80,9 @@ def compute_eligible_at(policy: Optional[str], runner_state: dict,
             # the past, the user still asked to skip a session — push out a
             # full window from now rather than running immediately.
             if target <= now_utc:
-                target = now_utc + timedelta(minutes=SESSION_LENGTH_MINUTES)
+                target = now_utc + timedelta(minutes=_fallback_window_minutes())
         else:
-            target = now_utc + timedelta(minutes=SESSION_LENGTH_MINUTES)
+            target = now_utc + timedelta(minutes=_fallback_window_minutes())
         return target.isoformat(timespec='seconds')
     if policy == RUN_POLICY_TONIGHT:
         # "Next 02:00 strictly in the future" in the machine's local timezone.
@@ -376,7 +388,7 @@ def create_task(dir: str, prompt: str, level: str = 'craftsman',
     run_policy controls when the task becomes eligible for selection:
       None / 'this_session' → eligible immediately (default).
       'next_session'        → skip the upcoming burn; eligible after the
-                              current 5-hour session ends.
+                              current usage window ends.
       'tonight'             → eligible at the next 02:00 local time.
     eligible_at is computed once at create time from current runner state and
     persisted, so restarts and clock drift don't lose schedule.
@@ -384,6 +396,10 @@ def create_task(dir: str, prompt: str, level: str = 'craftsman',
     if run_policy and run_policy not in VALID_RUN_POLICIES:
         raise ValueError(f'invalid run_policy: {run_policy!r} '
                          f'(expected one of {sorted(VALID_RUN_POLICIES)})')
+    if session_id:
+        from .sessions import is_valid_session_id
+        if not is_valid_session_id(session_id):
+            raise ValueError('session_id must be a Codex session UUID')
     abs_dir = expand_path(dir)
     task_id = make_task_id(abs_dir)
     data: dict = {

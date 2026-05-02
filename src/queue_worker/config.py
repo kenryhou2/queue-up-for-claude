@@ -1,12 +1,10 @@
 """Shared project paths, bootstrap, logger singleton, and private .env loader.
 
 The .env loader is deliberately private — values are NOT exported into
-``os.environ``. The runner spawns ``claude -p`` subprocesses with
-``env=subprocess_env()`` (executor.py), which copies ``os.environ`` and
-filters out queue-worker-private keys. Secrets in particular
-(CLAUDE_SESSION_KEY, QUEUE_WORKER_PASSWORD) must never leak that way.
-Use ``get_env()`` instead of ``os.environ.get()`` everywhere queue_worker
-reads its own configuration.
+``os.environ``. The runner spawns Codex subprocesses with ``env=subprocess_env()``
+(executor.py), which copies ``os.environ`` and filters out queue-private keys.
+Use ``get_env()`` instead of ``os.environ.get()`` everywhere queue_worker reads
+its own configuration.
 """
 
 import os
@@ -23,7 +21,7 @@ STATIC_DIR    = Path(__file__).resolve().parent / 'static'
 _logger = None
 
 # Private-key store loaded from .env. Read via get_env(); NEVER mutated into
-# os.environ so child processes (claude -p) cannot inherit secrets from .env.
+# os.environ so child processes cannot inherit secrets from .env.
 _DOTENV: dict[str, str] = {}
 
 
@@ -40,22 +38,22 @@ def get_env(key: str, default: str | None = None) -> str | None:
     return _DOTENV.get(key, default)
 
 
-# Env vars that must NEVER reach `claude -p` subprocesses spawned by the
-# executor or the usage-check kick. They have no business in subprocess
-# space and any leak to a task prompt is a credential exposure.
+# Env vars that must NEVER reach Codex subprocesses spawned by the executor.
+# They have no business in task space and any leak to a prompt is a credential
+# exposure.
 _SUBPROCESS_SECRET_KEYS = (
-    'CLAUDE_SESSION_KEY',
-    'CLAUDE_ORG_UUID',
-    'QUEUE_WORKER_PASSWORD',
+    'CODEX_QUEUE_PASSWORD',
+    'CODEX_QUEUE_USAGE_COMMAND',
+    'CODEX_QUEUE_USAGE_TIMEOUT_SECONDS',
+    'CODEX_QUEUE_FALLBACK_WINDOW_MINUTES',
 )
 
 
 def subprocess_env() -> dict[str, str]:
-    """Return a copy of `os.environ` with queue-worker secrets stripped.
+    """Return a copy of `os.environ` with codex-queue secrets stripped.
 
-    Used by both `executor._run_claude` (task subprocesses) and
-    `usage_check._kick_via_cli` (the session-kick subprocess). Defense in
-    depth on top of `_DOTENV` not polluting `os.environ` in the first place.
+    Used by `executor._run_codex` for task subprocesses. Defense in depth on
+    top of `_DOTENV` not polluting `os.environ` in the first place.
     """
     return {k: v for k, v in os.environ.items()
             if k not in _SUBPROCESS_SECRET_KEYS}
@@ -95,7 +93,7 @@ def _load_dotenv(path: Path = PROJECT_ROOT / '.env') -> None:
         return
     err = check_secret_file_perms(path)
     if err:
-        sys.stderr.write(f'queue-worker: refusing to load .env — {err}\n')
+        sys.stderr.write(f'codex-queue: refusing to load .env — {err}\n')
         return
     try:
         text = path.read_text(encoding='utf-8')

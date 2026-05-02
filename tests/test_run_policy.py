@@ -2,7 +2,6 @@
 
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -10,10 +9,10 @@ import yaml
 
 from queue_worker import queue_ops
 from queue_worker.queue_ops import (
+    DEFAULT_USAGE_WINDOW_MINUTES,
     RUN_POLICY_NEXT_SESSION,
     RUN_POLICY_THIS_SESSION,
     RUN_POLICY_TONIGHT,
-    SESSION_LENGTH_MINUTES,
     TONIGHT_HOUR_LOCAL,
     compute_eligible_at,
     create_task,
@@ -62,7 +61,7 @@ class TestComputeEligibleAt:
     def test_next_session_falls_back_when_no_state(self):
         now = datetime(2026, 4, 19, 14, 0, 0, tzinfo=timezone.utc)
         out = compute_eligible_at(RUN_POLICY_NEXT_SESSION, {}, now=now)
-        expected = now + timedelta(minutes=SESSION_LENGTH_MINUTES)
+        expected = now + timedelta(minutes=DEFAULT_USAGE_WINDOW_MINUTES)
         assert out == expected.isoformat(timespec='seconds')
 
     def test_next_session_pushes_when_cached_state_already_expired(self):
@@ -72,22 +71,29 @@ class TestComputeEligibleAt:
         stale_check = now.timestamp() - 6 * 3600
         state = {'last_check_at': stale_check, 'last_check_reset_minutes': 60}
         out = compute_eligible_at(RUN_POLICY_NEXT_SESSION, state, now=now)
-        expected = now + timedelta(minutes=SESSION_LENGTH_MINUTES)
+        expected = now + timedelta(minutes=DEFAULT_USAGE_WINDOW_MINUTES)
         assert out == expected.isoformat(timespec='seconds')
 
     def test_next_session_ignores_stale_reset_after_errored_check(self):
         # runner.do_usage_check() updates last_check_at on error but leaves
         # the pct/reset fields at their previous successful values. Don't
-        # trust them — fall back to now+5h.
+        # trust them — fall back to the default usage window.
         now = datetime(2026, 4, 19, 14, 0, 0, tzinfo=timezone.utc)
         state = {
             'last_check_at': now.timestamp() - 5,  # fresh timestamp
             'last_check_reset_minutes': 90,        # stale successful value
-            'last_check_error': 'cloudflare blocked the API endpoint',
-            'last_check_status': 'ERROR:cloudflare_blocked',
+            'last_check_error': 'usage command failed',
+            'last_check_status': 'ERROR:usage_command_failed',
         }
         out = compute_eligible_at(RUN_POLICY_NEXT_SESSION, state, now=now)
-        expected = now + timedelta(minutes=SESSION_LENGTH_MINUTES)
+        expected = now + timedelta(minutes=DEFAULT_USAGE_WINDOW_MINUTES)
+        assert out == expected.isoformat(timespec='seconds')
+
+    def test_next_session_fallback_window_is_configurable(self, monkeypatch):
+        monkeypatch.setenv('CODEX_QUEUE_FALLBACK_WINDOW_MINUTES', '45')
+        now = datetime(2026, 4, 19, 14, 0, 0, tzinfo=timezone.utc)
+        out = compute_eligible_at(RUN_POLICY_NEXT_SESSION, {}, now=now)
+        expected = now + timedelta(minutes=45)
         assert out == expected.isoformat(timespec='seconds')
 
     def test_tonight_after_2am_picks_tomorrow(self):
@@ -156,6 +162,10 @@ class TestCreateTaskPersistsPolicy:
     def test_invalid_policy_rejected(self, queue_dir):
         with pytest.raises(ValueError, match='invalid run_policy'):
             create_task(str(queue_dir), 'do a thing', run_policy='whenever')
+
+    def test_invalid_session_id_rejected(self, queue_dir):
+        with pytest.raises(ValueError, match='session_id must be a Codex session UUID'):
+            create_task(str(queue_dir), 'do a thing', session_id='thread-name')
 
     def test_parse_normalizes_hand_edited_datetime(self, queue_dir):
         # Simulate a user hand-editing eligible_at unquoted: PyYAML loads it

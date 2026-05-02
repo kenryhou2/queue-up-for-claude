@@ -14,7 +14,7 @@ from .profiles import resolve_capabilities, build_caps_section
 # Optional global base directory for shared agent identity
 BASE_AGENT_DIR = Path.home() / '.agent-base'
 
-# queue-worker project root (derived same way as cli.py)
+# codex-queue project root (derived same way as cli.py)
 QW_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -194,11 +194,11 @@ def build_output_conventions(task: Task, agent_dir: Path) -> str:
 
 # ── Main build function ────────────────────────────────────────────────────────
 
-def build_claude_md(task: Task) -> str:
+def build_codex_md(task: Task) -> str:
     """
     Assemble the full agent context.
     Uses reference links + abstracts — does NOT copy file content inline.
-    Used by `context` (prints to conversation) and `compile` (writes CLAUDE.md).
+    Used by `context` (prints to conversation) and `compile` (writes CODEX.md).
     """
     agent_dir = Path(task.resolved_dir) / '.agent'
     caps = resolve_capabilities(task)
@@ -207,7 +207,7 @@ def build_claude_md(task: Task) -> str:
 
     # Header
     sections.append(
-        f'<!-- queue-worker context | task: {task.id} | '
+        f'<!-- codex-queue context | task: {task.id} | '
         f'level: {task.level} | generated: {datetime.now().isoformat(timespec="seconds")} -->'
     )
     sections.append('')
@@ -216,29 +216,30 @@ def build_claude_md(task: Task) -> str:
     sections.append('# Agent session')
     sections.append('')
     sections.append(
-        'You are running autonomously via queue-worker. '
+        'You are running autonomously via codex-queue. '
+        'This generated context is written to CODEX.md. '
         'Your project context is in the files listed below. '
         'Read each file you need using your file-reading tools. '
         'Never guess at file contents — read them.'
     )
     sections.append('')
 
-    # queue-worker CLI instructions
-    qw_path = QW_ROOT / 'queue-worker'
+    # codex-queue CLI instructions
+    qw_path = QW_ROOT / 'codex-queue'
     venv_activate = QW_ROOT / '.venv' / 'bin' / 'activate'
-    sections.append('## queue-worker CLI')
+    sections.append('## codex-queue CLI')
     sections.append('')
-    sections.append(f'The queue-worker CLI is available at `{qw_path}`.')
+    sections.append(f'The codex-queue CLI is available at `{qw_path}`.')
     sections.append('To use it in shell commands:')
     sections.append('')
     sections.append('```bash')
-    sections.append(f'source {venv_activate} && queue-worker <command>')
+    sections.append(f'source {venv_activate} && codex-queue <command>')
     sections.append('```')
     sections.append('')
-    sections.append('Useful commands: `queue-worker ls`, `queue-worker status`, '
-                    '`queue-worker next`, `queue-worker logs`, '
-                    '`queue-worker add <dir> "<prompt>"`, '
-                    '`queue-worker init <dir>` (scaffold .agent/ in a new project).')
+    sections.append('Useful commands: `codex-queue ls`, `codex-queue status`, '
+                    '`codex-queue next`, `codex-queue logs`, '
+                    '`codex-queue add <dir> "<prompt>"`, '
+                    '`codex-queue init <dir>` (scaffold .agent/ in a new project).')
     sections.append(f'Full documentation: `{QW_ROOT / "README.md"}`')
     sections.append('')
     sections.append('---')
@@ -304,34 +305,34 @@ class BackupInfo:
     backup_path: Optional[Path] = None
 
 
-def inject_claude_md(project_dir: str, content: str) -> BackupInfo:
-    """Write CLAUDE.md to project_dir, backing up any existing one (PID-stamped)."""
-    claude_path = Path(project_dir) / 'CLAUDE.md'
-    backup_path = Path(project_dir) / f'CLAUDE.md.queue-worker-bak-{os.getpid()}'
-    had_original = claude_path.exists()
+def inject_codex_md(project_dir: str, content: str) -> BackupInfo:
+    """Write CODEX.md to project_dir, backing up any existing one (PID-stamped)."""
+    codex_path = Path(project_dir) / 'CODEX.md'
+    backup_path = Path(project_dir) / f'CODEX.md.queue-worker-bak-{os.getpid()}'
+    had_original = codex_path.exists()
 
     if had_original:
-        claude_path.rename(backup_path)
+        codex_path.rename(backup_path)
 
-    claude_path.write_text(content, encoding='utf-8')
+    codex_path.write_text(content, encoding='utf-8')
     return BackupInfo(had_original=had_original,
                       backup_path=backup_path if had_original else None)
 
 
-def cleanup_claude_md(project_dir: str, backup: BackupInfo) -> None:
-    """Delete injected CLAUDE.md and restore backup. Must run in a finally block."""
-    claude_path = Path(project_dir) / 'CLAUDE.md'
-    claude_path.unlink(missing_ok=True)
+def cleanup_codex_md(project_dir: str, backup: BackupInfo) -> None:
+    """Delete injected CODEX.md and restore backup. Must run in a finally block."""
+    codex_path = Path(project_dir) / 'CODEX.md'
+    codex_path.unlink(missing_ok=True)
     if backup.had_original and backup.backup_path and backup.backup_path.exists():
-        backup.backup_path.rename(claude_path)
+        backup.backup_path.rename(codex_path)
 
 
 def render_task_context(task_id: str) -> Optional[str]:
-    """Render the CLAUDE.md a task would receive at execution time. Returns
+    """Render the CODEX.md a task would receive at execution time. Returns
     None if the task isn't found in any queue bucket."""
     from .queue_ops import find_task_yaml
     from .task import parse_task
     path = find_task_yaml(task_id)
     if not path:
         return None
-    return build_claude_md(parse_task(str(path)))
+    return build_codex_md(parse_task(str(path)))

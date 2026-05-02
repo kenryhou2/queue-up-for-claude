@@ -62,7 +62,7 @@ def resolve_capabilities(task: Task) -> set[str]:
 
 def build_caps_section(caps: set[str]) -> str:
     """
-    Build the ALLOWED / NOT ALLOWED section for CLAUDE.md.
+    Build the ALLOWED / NOT ALLOWED section for CODEX.md.
     """
     all_flags = set(CAP_ALLOWED_TEXT)
     allowed = [CAP_ALLOWED_TEXT[f] for f in sorted(all_flags) if f in caps]

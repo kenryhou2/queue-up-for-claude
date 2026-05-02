@@ -9,7 +9,7 @@ from .config import LOG_DIR, bootstrap as _bootstrap, get_logger as _log
 
 @click.group()
 def main():
-    """queue-worker — autonomous Claude Code job queue."""
+    """codex-queue — autonomous Codex job queue."""
     _bootstrap()
 
 
@@ -70,15 +70,18 @@ def next_task(as_json):
 @click.option('--depends-on', default='', help='Comma-separated task IDs.')
 @click.option('--tag', default='', help='Comma-separated tags.')
 @click.option('--max-minutes', type=click.IntRange(min=1), default=None, help='Timeout in minutes.')
-@click.option('--session-id', default=None, help='Claude session UUID to resume when executing.')
+@click.option('--session-id', default=None, help='Codex session UUID to resume when executing.')
 def add(project_dir, prompt, level, priority, dry_run, depends_on, tag, max_minutes, session_id):
     """Add a task to the queue."""
     from .queue_ops import create_task
     deps = [x.strip() for x in depends_on.split(',') if x.strip()]
     tags = [x.strip() for x in tag.split(',') if x.strip()]
-    task_id, out_path = create_task(project_dir, prompt, level, priority,
-                                     dry_run, deps, tags, max_minutes,
-                                     session_id=session_id)
+    try:
+        task_id, out_path = create_task(project_dir, prompt, level, priority,
+                                        dry_run, deps, tags, max_minutes,
+                                        session_id=session_id)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
     click.echo(f'Added task {task_id}')
     click.echo(f'  file:  {out_path}')
     click.echo(f'  level: {level}  |  priority: {priority}  |  dir: {project_dir}')
@@ -234,17 +237,17 @@ def logs(task_id, date):
 @click.option('-l', '--level', default='craftsman', show_default=True,
               type=click.Choice(['observer', 'craftsman', 'committer', 'deployer']))
 def compile(project_dir, level):
-    """Generate CLAUDE.md for a project for daytime interactive use."""
+    """Generate CODEX.md for a project for daytime interactive use."""
     from .task import Task, expand_path, now_iso, CapsOverride, TaskBudget
-    from .injector import build_claude_md
+    from .injector import build_codex_md
     abs_dir = expand_path(project_dir)
     dummy = Task(id='[daytime-session]', created=now_iso(), dir=abs_dir,
                  prompt='[Daytime interactive session]', level=level,
                  yaml_path='', resolved_dir=abs_dir,
                  budget=TaskBudget(), caps_override=CapsOverride())
-    out = Path(abs_dir) / 'CLAUDE.md'
-    out.write_text(build_claude_md(dummy), encoding='utf-8')
-    click.echo(f'CLAUDE.md written to {out}')
+    out = Path(abs_dir) / 'CODEX.md'
+    out.write_text(build_codex_md(dummy), encoding='utf-8')
+    click.echo(f'CODEX.md written to {out}')
 
 
 @main.command('init')
@@ -284,7 +287,7 @@ def init(project_dir):
     click.echo('  2. Fill in each .md file (start with AGENT.md and CONTEXT.md)')
     click.echo('  3. Replace every "REPLACE THIS" abstract with a real summary')
     click.echo('  4. git add .agent/ && git commit -m "chore: add .agent/ context"')
-    click.echo(f'  5. queue-worker add {agent_dir.parent} "your first task" --level craftsman')
+    click.echo(f'  5. codex-queue add {agent_dir.parent} "your first task" --level craftsman')
 
 
 _TEMPLATES = {
@@ -297,7 +300,7 @@ abstract: "REPLACE THIS: 1-2 sentences describing who the agent is and what
 
 <!-- HOW TO FILL THIS IN:
      The abstract above is the most important part. It appears in every
-     generated CLAUDE.md. Write it as if briefing a new teammate in 2 sentences.
+     generated CODEX.md. Write it as if briefing a new teammate in 2 sentences.
 
      Below, describe the agent's role, specialty, and goals for this project.
      Be concrete: "senior backend engineer" is better than "developer".
@@ -488,7 +491,7 @@ abstract: "Learned facts about this project. Updated by the agent over time
 _SETUP_GUIDE = '''\
 # .agent/ Setup Guide
 
-This directory contains context files that queue-worker uses to brief the
+This directory contains context files that codex-queue uses to brief the
 AI agent before each task. Fill in each file to get better results.
 
 **Delete this guide once you're done setting up.**
@@ -662,7 +665,7 @@ You can also pre-populate it with things you know the agent should learn:
 ## After filling in the files
 
 1. Commit the .agent/ directory to your repo
-2. Add a task: `queue-worker add /path/to/this/project "your task" --level craftsman`
+2. Add a task: `codex-queue add /path/to/this/project "your task" --level craftsman`
 3. The agent will read these files at the start of every task
 
 ## Tips

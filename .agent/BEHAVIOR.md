@@ -78,8 +78,7 @@ The patterns below have been caught and removed multiple times by codex. Pre-emp
 - **Pyflakes**: `pip install pyflakes && python -m pyflakes src/queue_worker/`.
   Catches unused imports + pointless f-strings instantly. Add to your pre-commit ritual.
 - **Gitleaks**: `gitleaks detect --source . --no-git --verbose`. Run before any
-  push if you've touched config / docs / templates. Test fixtures use clearly-fake
-  `sk-ant-test-fake-...` strings that gitleaks correctly skips.
+  push if you've touched config / docs / templates.
 
 ## Refactor discipline
 

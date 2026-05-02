@@ -1,0 +1,14 @@
+id: llmsandbox-20260502-0922
+created: '2026-05-02T20:18:18+00:00'
+dir: /home/hkou/LLMsandbox
+prompt: hi
+level: observer
+priority: 3
+dry_run: false
+depends_on: []
+tags: []
+run_policy: this_session
+started_at: '2026-05-02T20:21:18+00:00'
+status: done
+finished_at: '2026-05-02T20:21:53+00:00'
+duration_minutes: 0.6

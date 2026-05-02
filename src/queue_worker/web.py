@@ -1,4 +1,4 @@
-"""queue-worker web dashboard — FastAPI server on localhost:51002."""
+"""codex-queue web dashboard — FastAPI server on localhost:51002."""
 
 import csv
 import threading
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     from .runner import wake_runner
     wake_runner()  # interrupt any in-progress sleep so shutdown is fast
 
-app = FastAPI(title="queue-worker", lifespan=lifespan)
+app = FastAPI(title="codex-queue", lifespan=lifespan)
 
 
 # ── Auth middleware ──────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ def api_logout(request: Request):
 # ── Thread management ────────────────────────────────────────────────────────
 
 _run_lock = threading.Lock()           # guards _task_threads / _run_thread bookkeeping
-_execute_lock = threading.Lock()       # serializes claude -p subprocesses across runner + web
+_execute_lock = threading.Lock()       # serializes Codex subprocesses across runner + web
 _run_thread: Optional[threading.Thread] = None
 _run_error: Optional[str] = None
 _task_threads: dict[str, threading.Thread] = {}
@@ -272,11 +272,11 @@ def api_browse(path: str = Query(default="~")):
 # ── Routes: Status ───────────────────────────────────────────────────────────
 
 def _redact_runner_state(state: dict) -> dict:
-    """Defense-in-depth: scrub any sk-ant- key or email from runner state
+    """Defense-in-depth: scrub likely API keys or emails from runner state
     strings before sending to the dashboard. Iterates every string field
     so future additions to RunnerState are covered automatically.
     """
-    from .usage_check_http import redact
+    from .usage_check_command import redact
     out = dict(state)
     for k, v in out.items():
         if isinstance(v, str) and v:
@@ -327,10 +327,13 @@ def api_get_task(task_id: str):
 def api_add_task(body: AddTaskBody):
     from .queue_ops import create_task
     from .runner import wake_runner
-    task_id, out_path = create_task(
-        body.dir, body.prompt, body.level.value, body.priority,
-        body.dry_run, body.depends_on, body.tags, body.max_minutes,
-        run_policy=body.run_policy, session_id=body.session_id)
+    try:
+        task_id, out_path = create_task(
+            body.dir, body.prompt, body.level.value, body.priority,
+            body.dry_run, body.depends_on, body.tags, body.max_minutes,
+            run_policy=body.run_policy, session_id=body.session_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     wake_runner()  # so a burning runner picks up the new task immediately
     return {'id': task_id, 'file': str(out_path)}
 
@@ -572,7 +575,7 @@ def api_resume_info(task_id: str):
     if not sess.is_valid_session_id(task.session_id):
         return JSONResponse({
             'error': 'invalid_session_id',
-            'detail': 'session_id is not a UUID — possibly a web (cse_*) session or hand-edited YAML',
+            'detail': 'session_id is not a UUID; thread-name resume is not supported here',
         }, status_code=400)
 
     project_dir = sess.project_dir_for(task.resolved_dir)
@@ -581,7 +584,6 @@ def api_resume_info(task_id: str):
         if not project_dir.exists():
             return JSONResponse({
                 'error': 'project_dir_not_found',
-                'expected_slug': sess.slugify_cwd(task.resolved_dir),
                 'expected_path': str(project_dir),
             }, status_code=404)
         return JSONResponse({

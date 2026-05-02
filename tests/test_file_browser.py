@@ -1,10 +1,6 @@
 """Tests for file_browser.py — pure function tests using tmp_path."""
 
 import os
-import stat
-from pathlib import Path
-
-import pytest
 
 from queue_worker.file_browser import (
     classify_file,

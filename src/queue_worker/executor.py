@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .task import Task, augment_task, now_iso
-from .injector import build_claude_md, inject_claude_md, cleanup_claude_md, BackupInfo
+from .injector import build_codex_md, inject_codex_md, cleanup_codex_md, BackupInfo
 from .lock import acquire_task_lock, update_task_lock, release_task_lock
 from .queue_ops import append_episodic_entry, augment_stall
 from .logger import TaskLogger
@@ -31,18 +31,18 @@ class ExecuteResult:
     tokens_used: Optional[int] = None
 
 
-def _run_claude(cmd: list[str], cwd: str,
-                timeout_seconds: int, log_fn,
-                lock_path: Optional[Path] = None) -> tuple[int, bool, Optional[int]]:
+def _run_codex(cmd: list[str], cwd: str,
+               timeout_seconds: int, log_fn,
+               lock_path: Optional[Path] = None) -> tuple[int, bool, Optional[int]]:
     """
-    Spawn `claude -p` as a subprocess in its own process group.
+    Spawn Codex as a subprocess in its own process group.
     Stream merged stdout+stderr line by line to log_fn.
     Returns (exit_code, timed_out, tokens_used).
     """
-    # Scrub queue-worker secrets from the subprocess env: the spawned
-    # `claude -p` runs untrusted task prompts and has no business reading our
-    # session key, dashboard password, or org pin. Defense-in-depth on top of
-    # config._DOTENV staying out of os.environ.
+    # Scrub queue-private config from the subprocess env: the spawned Codex
+    # process runs untrusted task prompts and has no business reading dashboard
+    # or usage-provider secrets. Defense-in-depth on top of config._DOTENV
+    # staying out of os.environ.
     from .config import subprocess_env
     proc = subprocess.Popen(
         cmd, cwd=cwd,
@@ -120,10 +120,10 @@ def _read_checkpoint(path: Path) -> dict:
 def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
     """
     Full single-task lifecycle:
-    1. Inject CLAUDE.md into project dir
-    2. Spawn `claude -p --dangerously-skip-permissions`
+    1. Inject CODEX.md into project dir
+    2. Spawn `codex exec --full-auto`
     3. Determine outcome (checkpoint > dry-run > timeout > exit code > success)
-    4. Cleanup CLAUDE.md in finally block (always runs)
+    4. Cleanup CODEX.md in finally block (always runs)
     """
     start_time = time.monotonic()
     start_epoch = time.time()
@@ -132,38 +132,38 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
     backup: Optional[BackupInfo] = None
 
     try:
-        # 1. Build and inject CLAUDE.md
-        log.task(task.id, 'building CLAUDE.md')
-        content = build_claude_md(task)
-        backup = inject_claude_md(task.resolved_dir, content)
+        # 1. Build and inject CODEX.md
+        log.task(task.id, 'building CODEX.md')
+        content = build_codex_md(task)
+        backup = inject_codex_md(task.resolved_dir, content)
         update_task_lock(lock_path, {
-            'claude_md_written': True,
+            'codex_md_written': True,
             'backed_up_original': backup.had_original,
         })
 
-        # 2. Spawn claude
+        # 2. Spawn Codex
         if task.session_id:
-            # Resume mode: fork the user's conversation with full context
             prompt = (
-                'You have been resumed by queue-worker to execute a queued task. '
-                'Read CLAUDE.md in this directory for your task details and '
+                'You have been resumed by codex-queue to execute a queued task. '
+                'Read CODEX.md in this directory for your task details and '
                 'output conventions, then complete the task.'
             )
-            cmd = ['claude', '--resume', task.session_id,
-                   '-p', '--dangerously-skip-permissions', prompt]
+            cmd = ['codex', 'exec', 'resume', '--full-auto',
+                   '--skip-git-repo-check',
+                   task.session_id, prompt]
         else:
-            # Fresh session (default)
             prompt = (
-                'You have been started by queue-worker. '
-                'Your full context and task are in CLAUDE.md in this directory. '
-                'Read CLAUDE.md first, then complete your task.'
+                'You have been started by codex-queue. '
+                'Your full context and task are in CODEX.md in this directory. '
+                'Read CODEX.md first, then complete your task.'
             )
-            cmd = ['claude', '-p', '--dangerously-skip-permissions', prompt]
+            cmd = ['codex', 'exec', '--full-auto', '--skip-git-repo-check',
+                   '-C', task.resolved_dir, prompt]
         timeout_s = task.budget.max_minutes * 60
 
-        mode = f'--resume {task.session_id[:12]}...' if task.session_id else '-p'
-        log.task(task.id, f'spawning claude {mode} (timeout: {task.budget.max_minutes}min)')
-        exit_code, timed_out, tokens_used = _run_claude(
+        mode = f'resume {task.session_id[:12]}...' if task.session_id else 'exec'
+        log.task(task.id, f'spawning codex {mode} (timeout: {task.budget.max_minutes}min)')
+        exit_code, timed_out, tokens_used = _run_codex(
             cmd=cmd, cwd=task.resolved_dir,
             timeout_seconds=timeout_s,
             log_fn=lambda line: log.task(task.id, f'  {line}'),
@@ -214,7 +214,7 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
 
         # d) Non-zero exit?
         if exit_code != 0:
-            detail = f'claude exited with code {exit_code}'
+            detail = f'codex exited with code {exit_code}'
             log.task(task.id, detail)
             _write_episodic(task, 'failed', None, duration, tokens_used)
             return ExecuteResult('failed', None, detail, duration, tokens_used)
@@ -229,7 +229,7 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
 
     finally:
         if backup is not None:
-            cleanup_claude_md(task.resolved_dir, backup)
+            cleanup_codex_md(task.resolved_dir, backup)
         release_task_lock(lock_path)
 
 

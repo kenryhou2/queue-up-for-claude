@@ -27,7 +27,7 @@ def acquire_task_lock(task_id: str, project_dir: str) -> Path:
         'pid': os.getpid(),
         'started_at': now_iso(),
         'dir': project_dir,
-        'claude_md_written': False,
+        'codex_md_written': False,
         'backed_up_original': False,
     }, indent=2))
     return lock_path
@@ -49,7 +49,7 @@ class StaleLock:
     task_id: str
     pid: int
     project_dir: str
-    claude_md_written: bool
+    codex_md_written: bool
     backed_up_original: bool
 
 
@@ -68,12 +68,12 @@ def recover_stale_locks() -> list[StaleLock]:
                     task_id=data.get('task_id', lock_file.stem),
                     pid=pid,
                     project_dir=data.get('dir', ''),
-                    claude_md_written=data.get('claude_md_written', False),
+                    codex_md_written=data.get('codex_md_written', False),
                     backed_up_original=data.get('backed_up_original', False),
                 ))
         except json.JSONDecodeError:
             stale.append(StaleLock(
                 lock_path=lock_file, task_id=lock_file.stem, pid=0,
-                project_dir='', claude_md_written=False, backed_up_original=False,
+                project_dir='', codex_md_written=False, backed_up_original=False,
             ))
     return stale

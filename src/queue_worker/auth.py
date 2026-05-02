@@ -1,8 +1,8 @@
-"""Password-based session auth for queue-worker web.
+"""Password-based session auth for codex-queue web.
 
 Config (env vars):
-  QUEUE_WORKER_PASSWORD        Shared password. Unset/empty → auth disabled.
-  QUEUE_WORKER_COOKIE_SECURE   '1' (default) to require HTTPS for the session
+  CODEX_QUEUE_PASSWORD         Shared password. Unset/empty → auth disabled.
+  CODEX_QUEUE_COOKIE_SECURE    '1' (default) to require HTTPS for the session
                                cookie. Set '0' for local HTTP dev.
 
 Protects against:
@@ -32,11 +32,11 @@ from .config import get_env
 # ── Config ────────────────────────────────────────────────────────────────────
 
 # Read through get_env so .env values reach auth.py without being exported
-# into os.environ (which would propagate to claude -p subprocesses).
-_PASSWORD = get_env('QUEUE_WORKER_PASSWORD') or ''
+# into os.environ (which would propagate to Codex subprocesses).
+_PASSWORD = get_env('CODEX_QUEUE_PASSWORD') or ''
 _PASSWORD_BYTES = _PASSWORD.encode('utf-8')  # compare_digest requires bytes for non-ASCII
-COOKIE_SECURE = (get_env('QUEUE_WORKER_COOKIE_SECURE') or '1') == '1'
-COOKIE_NAME = 'qw_session'
+COOKIE_SECURE = (get_env('CODEX_QUEUE_COOKIE_SECURE') or '1') == '1'
+COOKIE_NAME = 'cq_session'
 SESSION_TTL_SEC = 7 * 86400
 
 LOCKOUT_THRESHOLD = 5
