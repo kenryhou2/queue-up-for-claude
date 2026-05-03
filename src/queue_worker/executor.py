@@ -4,6 +4,7 @@ import signal
 import time
 import threading
 import subprocess
+import shutil
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -21,6 +22,32 @@ _TOKEN_PATTERNS = [
     re.compile(r'tokens?\s+used\s*[=:]\s*([\d,]+)', re.IGNORECASE),
 ]
 
+_ENV_BLOCKER_PATTERNS = [
+    re.compile(r'bwrap: .*Failed RTM_NEWADDR: Operation not permitted', re.IGNORECASE),
+    re.compile(r'blocked before I can read `?CODEX\.md`?', re.IGNORECASE),
+    re.compile(r'every (?:local |shell )?command .* failing .* sandbox', re.IGNORECASE),
+    re.compile(r'sandbox (?:setup|wrapper) (?:error|layer)', re.IGNORECASE),
+    re.compile(r'No MCP .*resources .*available .*fallback', re.IGNORECASE),
+]
+
+
+def _codex_bin() -> str:
+    """Return the Codex CLI executable path for queued task execution."""
+    from .config import get_env
+    configured = (get_env('CODEX_QUEUE_CODEX_BIN') or '').strip()
+    if configured:
+        return configured
+    found = shutil.which('codex')
+    return found or 'codex'
+
+
+def _codex_exec_policy_args() -> list[str]:
+    """Return noninteractive execution policy flags for Codex CLI."""
+    from .config import get_env
+    if (get_env('CODEX_QUEUE_CODEX_BYPASS_SANDBOX') or '').strip() == '1':
+        return ['--dangerously-bypass-approvals-and-sandbox']
+    return ['--full-auto']
+
 
 @dataclass
 class ExecuteResult:
@@ -33,11 +60,12 @@ class ExecuteResult:
 
 def _run_codex(cmd: list[str], cwd: str,
                timeout_seconds: int, log_fn,
-               lock_path: Optional[Path] = None) -> tuple[int, bool, Optional[int]]:
+               lock_path: Optional[Path] = None
+               ) -> tuple[int, bool, Optional[int], Optional[str]]:
     """
     Spawn Codex as a subprocess in its own process group.
     Stream merged stdout+stderr line by line to log_fn.
-    Returns (exit_code, timed_out, tokens_used).
+    Returns (exit_code, timed_out, tokens_used, environment_blocker_detail).
     """
     # Scrub queue-private config from the subprocess env: the spawned Codex
     # process runs untrusted task prompts and has no business reading dashboard
@@ -64,11 +92,17 @@ def _run_codex(cmd: list[str], cwd: str,
 
     timed_out = False
     captured_tokens: list[Optional[int]] = [None]
+    environment_blocker: list[Optional[str]] = [None]
 
     def stream():
         for line in proc.stdout:
             stripped = line.rstrip()
             log_fn(stripped)
+            if environment_blocker[0] is None:
+                for pat in _ENV_BLOCKER_PATTERNS:
+                    if pat.search(stripped):
+                        environment_blocker[0] = stripped[:300]
+                        break
             for pat in _TOKEN_PATTERNS:
                 m = pat.search(stripped)
                 if m:
@@ -95,7 +129,7 @@ def _run_codex(cmd: list[str], cwd: str,
             proc.wait()
 
     t.join(timeout=2)
-    return proc.returncode, timed_out, captured_tokens[0]
+    return proc.returncode, timed_out, captured_tokens[0], environment_blocker[0]
 
 
 def _find_new_checkpoint(agent_dir: Path, since: float) -> Optional[Path]:
@@ -141,29 +175,39 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
             'backed_up_original': backup.had_original,
         })
 
-        # 2. Spawn Codex
+        # 2. Spawn Codex. The context is still written to CODEX.md for
+        # continuity with interactive sessions, but it is also included in the
+        # initial prompt so the agent can start even if its first shell read
+        # would fail.
         if task.session_id:
             prompt = (
                 'You have been resumed by codex-queue to execute a queued task. '
-                'Read CODEX.md in this directory for your task details and '
-                'output conventions, then complete the task.'
+                'Your full task context is included below and is also written '
+                'to CODEX.md in this directory for reference. Complete the task.\n\n'
+                '--- BEGIN CODEX.md ---\n'
+                f'{content}\n'
+                '--- END CODEX.md ---'
             )
-            cmd = ['codex', 'exec', 'resume', '--full-auto',
-                   '--skip-git-repo-check',
+            cmd = [_codex_bin(), 'exec', 'resume',
+                   *_codex_exec_policy_args(), '--skip-git-repo-check',
                    task.session_id, prompt]
         else:
             prompt = (
                 'You have been started by codex-queue. '
-                'Your full context and task are in CODEX.md in this directory. '
-                'Read CODEX.md first, then complete your task.'
+                'Your full task context is included below and is also written '
+                'to CODEX.md in this directory for reference. Complete the task.\n\n'
+                '--- BEGIN CODEX.md ---\n'
+                f'{content}\n'
+                '--- END CODEX.md ---'
             )
-            cmd = ['codex', 'exec', '--full-auto', '--skip-git-repo-check',
+            cmd = [_codex_bin(), 'exec',
+                   *_codex_exec_policy_args(), '--skip-git-repo-check',
                    '-C', task.resolved_dir, prompt]
         timeout_s = task.budget.max_minutes * 60
 
         mode = f'resume {task.session_id[:12]}...' if task.session_id else 'exec'
         log.task(task.id, f'spawning codex {mode} (timeout: {task.budget.max_minutes}min)')
-        exit_code, timed_out, tokens_used = _run_codex(
+        exit_code, timed_out, tokens_used, environment_blocker = _run_codex(
             cmd=cmd, cwd=task.resolved_dir,
             timeout_seconds=timeout_s,
             log_fn=lambda line: log.task(task.id, f'  {line}'),
@@ -212,14 +256,21 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
                                 f'Exceeded {task.budget.max_minutes}min budget',
                                 duration, tokens_used)
 
-        # d) Non-zero exit?
+        # d) Codex reported it could not execute the task?
+        if environment_blocker:
+            detail = f'codex environment blocker: {environment_blocker}'
+            log.task(task.id, detail)
+            _write_episodic(task, 'failed', None, duration, tokens_used)
+            return ExecuteResult('failed', None, detail, duration, tokens_used)
+
+        # e) Non-zero exit?
         if exit_code != 0:
             detail = f'codex exited with code {exit_code}'
             log.task(task.id, detail)
             _write_episodic(task, 'failed', None, duration, tokens_used)
             return ExecuteResult('failed', None, detail, duration, tokens_used)
 
-        # e) Success
+        # f) Success
         briefing = agent_dir / 'briefings' / f'{datetime.now().strftime("%Y%m%d")}.md'
         if not briefing.exists():
             log.task(task.id, 'warning: agent did not write a briefing')

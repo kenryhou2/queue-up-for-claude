@@ -74,10 +74,7 @@ class RunnerState:
     last_anchor_kind: Optional[str] = None             # diagnostic
     last_anchor_at: Optional[float] = None             # diagnostic
     last_check_error_code: Optional[str] = None        # stable code for /api/status
-<<<<<<< HEAD
-=======
     last_check_backend: Optional[str] = None
->>>>>>> 160762e (editing for codex)
 
 
 _runner_state = RunnerState()
@@ -568,6 +565,7 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
             'last_check_status': result.status,
             'last_check_error': result.error,
             'last_check_error_code': result.error_code,
+            'last_check_backend': result.backend,
         }
         if kind == 't_minus_60':
             fields['t_minus_60_done_for_cycle'] = True

@@ -1,9 +1,17 @@
 """Codex usage checker dispatcher.
 
-The single backend is a local command configured by
-``CODEX_QUEUE_USAGE_COMMAND``. It prints JSON with ``used_pct`` and
-``reset_minutes``. This module maps backend errors to UsageCheckResult and
-appends exactly one row to usage_history.csv per logical check.
+Backend selection: set ``CODEX_QUEUE_USAGE_BACKEND`` to choose how usage is
+fetched:
+
+  command    (default) — run a local command (``CODEX_QUEUE_USAGE_COMMAND``)
+  codex_http           — fetch from ChatGPT Codex cloud analytics API
+
+The command backend runs ``CODEX_QUEUE_USAGE_COMMAND`` and expects JSON with
+``used_pct`` and ``reset_minutes``.  The codex_http backend authenticates via
+a ChatGPT session token and calls the Codex cloud usage API.
+
+This module maps backend errors to UsageCheckResult and appends exactly one
+row to usage_history.csv per logical check.
 """
 
 import csv
@@ -12,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from .config import PROJECT_ROOT
+from .config import PROJECT_ROOT, get_env
 
 
 USAGE_CSV = PROJECT_ROOT / 'usage_history.csv'
@@ -68,7 +76,40 @@ def _csv_row(result: UsageCheckResult) -> tuple[str, str, str]:
 
 
 def _fetch(log_fn) -> UsageCheckResult:
-    """Run the command backend, mapping typed exceptions to a UsageCheckResult."""
+    """Dispatch to the configured backend, mapping typed exceptions to UsageCheckResult.
+
+    Backend is selected by CODEX_QUEUE_USAGE_BACKEND:
+      command     (default) — local command via CODEX_QUEUE_USAGE_COMMAND
+      codex_http            — ChatGPT Codex cloud analytics HTTP API
+    """
+    backend = (get_env('CODEX_QUEUE_USAGE_BACKEND') or 'command').strip().lower()
+
+    if backend == 'codex_http':
+        from .usage_check_codex_http import (
+            fetch_usage_codex_http, redact, CodexHttpError,
+        )
+        try:
+            return fetch_usage_codex_http(log_fn)
+        except CodexHttpError as e:
+            return UsageCheckResult(
+                status=f'ERROR:{e.code}',
+                error=redact(str(e)),
+                finished_at=time.time(),
+                error_code=e.code,
+                backend='codex_http',
+            )
+        except Exception as e:
+            from .usage_check_codex_http import redact as _redact
+            msg = _redact(str(e) or type(e).__name__)[:200]
+            return UsageCheckResult(
+                status='ERROR:codex_http_unexpected',
+                error=msg,
+                finished_at=time.time(),
+                error_code='codex_http_unexpected',
+                backend='codex_http',
+            )
+
+    # Default: command backend
     from .usage_check_command import (
         fetch_usage_command, redact, UsageCommandError,
     )

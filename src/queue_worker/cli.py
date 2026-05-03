@@ -230,6 +230,64 @@ def logs(task_id, date):
         click.echo(line)
 
 
+# ── usage auth / checking ────────────────────────────────────────────────────
+
+@main.command('set-chatgpt-token')
+@click.option('--stdin', 'from_stdin', is_flag=True,
+              help='Read the token from stdin instead of prompting.')
+def set_chatgpt_token(from_stdin):
+    """Store the ChatGPT session token for the codex_http usage backend."""
+    from .usage_check_codex_http import SESSION_TOKEN_FILE
+
+    if from_stdin:
+        token = sys.stdin.read().strip()
+    else:
+        token = click.prompt(
+            'Paste __Secure-next-auth.session-token',
+            hide_input=True,
+            confirmation_prompt=False,
+        ).strip()
+
+    if len(token) < 20:
+        raise click.ClickException('token is too short')
+
+    SESSION_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_TOKEN_FILE.parent.chmod(0o700)
+    SESSION_TOKEN_FILE.write_text(token, encoding='utf-8')
+    SESSION_TOKEN_FILE.chmod(0o600)
+    click.echo(f'Stored ChatGPT session token at {SESSION_TOKEN_FILE}')
+
+
+@main.command('check-usage')
+def check_usage():
+    """Fetch usage once and append usage_history.csv."""
+    from .usage_check import check_usage_once
+
+    result = check_usage_once(lambda msg: click.echo(msg))
+    if result.pct is not None:
+        click.echo(f'usage: {result.pct}%')
+    if result.reset_str:
+        click.echo(f'resets in: {result.reset_str}')
+    click.echo(f'status: {result.status}')
+    click.echo(f'backend: {result.backend}')
+    if result.error:
+        click.echo(f'error: {result.error}')
+    if result.error_code:
+        raise click.ClickException(result.error_code)
+
+
+@main.command('discover-usage-url')
+def discover_usage_url():
+    """Print likely ChatGPT Codex usage API URLs from the analytics page."""
+    from .usage_check_codex_http import discover_usage_urls
+
+    urls = discover_usage_urls(lambda msg: click.echo(msg))
+    if not urls:
+        raise click.ClickException('no candidate usage URLs found')
+    for url in urls:
+        click.echo(url)
+
+
 # ── compile / init ───────────────────────────────────────────────────────────
 
 @main.command()
@@ -677,3 +735,7 @@ You can also pre-populate it with things you know the agent should learn:
 - **Start minimal.** You don't need to fill in everything on day one.
   AGENT.md and CONTEXT.md are the most important. The rest can be added later.
 '''
+
+
+if __name__ == '__main__':
+    main()

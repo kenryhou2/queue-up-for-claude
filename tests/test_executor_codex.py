@@ -48,6 +48,9 @@ def _patch_locks(monkeypatch, tmp_path):
                         lambda _lock_path, _fields: None)
     monkeypatch.setattr(executor, 'release_task_lock',
                         lambda _lock_path: None)
+    monkeypatch.setattr(executor, '_codex_bin', lambda: 'codex')
+    monkeypatch.setattr(executor, '_codex_exec_policy_args',
+                        lambda: ['--full-auto'])
 
 
 def test_fresh_task_uses_codex_exec_full_auto(monkeypatch, tmp_path):
@@ -57,7 +60,7 @@ def test_fresh_task_uses_codex_exec_full_auto(monkeypatch, tmp_path):
     def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
         captured['cmd'] = cmd
         captured['cwd'] = cwd
-        return 0, False, 123
+        return 0, False, 123, None
 
     monkeypatch.setattr(executor, '_run_codex', fake_run)
     task = _task(tmp_path)
@@ -68,7 +71,8 @@ def test_fresh_task_uses_codex_exec_full_auto(monkeypatch, tmp_path):
         'codex', 'exec', '--full-auto', '--skip-git-repo-check',
         '-C', task.resolved_dir,
     ]
-    assert 'Read CODEX.md first' in captured['cmd'][-1]
+    assert '--- BEGIN CODEX.md ---' in captured['cmd'][-1]
+    assert 'Do the thing' in captured['cmd'][-1]
     assert captured['cwd'] == task.resolved_dir
     assert not (Path(task.resolved_dir) / 'CODEX.md').exists()
 
@@ -80,7 +84,7 @@ def test_resume_task_uses_codex_exec_resume(monkeypatch, tmp_path):
     def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
         captured['cmd'] = cmd
         captured['cwd'] = cwd
-        return 0, False, None
+        return 0, False, None, None
 
     sid = '019dea2c-2da1-73b3-bda5-ea155c32d6a4'
     monkeypatch.setattr(executor, '_run_codex', fake_run)
@@ -92,7 +96,8 @@ def test_resume_task_uses_codex_exec_resume(monkeypatch, tmp_path):
         'codex', 'exec', 'resume', '--full-auto', '--skip-git-repo-check',
     ]
     assert captured['cmd'][5] == sid
-    assert 'Read CODEX.md' in captured['cmd'][6]
+    assert '--- BEGIN CODEX.md ---' in captured['cmd'][6]
+    assert 'Do the thing' in captured['cmd'][6]
     assert captured['cwd'] == task.resolved_dir
 
 
@@ -100,7 +105,7 @@ def test_codex_md_original_is_restored_on_failure(monkeypatch, tmp_path):
     _patch_locks(monkeypatch, tmp_path)
 
     def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
-        return 2, False, None
+        return 2, False, None, None
 
     monkeypatch.setattr(executor, '_run_codex', fake_run)
     task = _task(tmp_path)
@@ -117,7 +122,7 @@ def test_codex_md_original_is_restored_on_timeout(monkeypatch, tmp_path):
     _patch_locks(monkeypatch, tmp_path)
 
     def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
-        return -15, True, None
+        return -15, True, None, None
 
     monkeypatch.setattr(executor, '_run_codex', fake_run)
     task = _task(tmp_path)
@@ -129,3 +134,18 @@ def test_codex_md_original_is_restored_on_timeout(monkeypatch, tmp_path):
     assert result.status == 'unfinished'
     assert result.stall_reason == 'timeout'
     assert codex_md.read_text(encoding='utf-8') == 'original'
+
+
+def test_codex_environment_blocker_fails_even_with_zero_exit(monkeypatch, tmp_path):
+    _patch_locks(monkeypatch, tmp_path)
+
+    def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
+        return 0, False, 4105, 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'
+
+    monkeypatch.setattr(executor, '_run_codex', fake_run)
+    task = _task(tmp_path)
+
+    result = executor.execute_task(task, _Log())
+
+    assert result.status == 'failed'
+    assert 'environment blocker' in result.stall_detail

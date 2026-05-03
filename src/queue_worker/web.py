@@ -660,7 +660,6 @@ def api_usage_history():
     rows = []
     with open(USAGE_CSV, newline='') as f:
         reader = csv.reader(f)
-        next(reader, None)  # skip header
         for row in reader:
             if len(row) < 3:
                 continue

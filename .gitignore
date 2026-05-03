@@ -17,11 +17,16 @@ build/
 
 # Runtime state — never check in
 logs/
+queue/pending/
 queue/running/
+queue/done/
+queue/unfinished/
+queue/failed/
 state/
 *.lock
 run.lock
 usage_history.csv
+queue/
 
 # Secrets
 .env

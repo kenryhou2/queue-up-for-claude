@@ -3,28 +3,39 @@
 A usage-aware job queue for Codex CLI.
 
 You queue tasks against your projects. The runner checks a local usage command,
-waits until unused budget is near reset, then runs one `codex exec --full-auto`
-subprocess per task. Each task gets a fresh Codex session with project-specific
-identity, capability boundaries, and rolling memory injected via `CODEX.md`.
+or the built-in ChatGPT Codex usage backend, waits until unused budget is near
+reset, then runs one `codex exec --full-auto` subprocess per task. Each task
+gets a fresh Codex session with project-specific identity, capability
+boundaries, and rolling memory injected via `CODEX.md`.
 
-> **Unofficial.** Not affiliated with, endorsed by, or supported by Anthropic. Reads your Claude.ai plan usage by calling the same web endpoints the claude.ai UI uses with your `sessionKey` cookie. **This may violate Anthropic's Terms of Service.** See [Disclaimer](#disclaimer). If the cookie API ever stops working, this tool stops working — there is no browser-scraping fallback.
+> **Unofficial.** Not affiliated with, endorsed by, or supported by OpenAI. If
+> you use the `codex_http` usage backend, codex-queue reads Codex cloud usage
+> from ChatGPT with your `__Secure-next-auth.session-token` cookie. If that
+> endpoint or cookie flow changes, the built-in backend may stop working; the
+> local command backend remains available.
 
 > ⚠️ **Full-disk file access.** This tool can read any file on your computer that your user account can read. Two reasons:
 > 1. The dashboard's file-browser API (`/api/files/list|read|raw`) is **not sandboxed** — it accepts any absolute path and resolves it via the OS. Anyone who can reach the dashboard can browse your whole home directory. Keep it on `127.0.0.1` / Tailscale and put a password on it before exposing it.
-> 2. Each task runs `claude -p --dangerously-skip-permissions`, so the Claude Code subprocess has no per-file permission prompts — it can read/write anywhere your user can.
+> 2. Each task runs `codex exec --full-auto`, so the Codex subprocess can
+>    read/write anywhere your user can unless your environment adds its own
+>    isolation.
 >
-> **Nothing is uploaded to the author and there is no telemetry.** The session key, usage history, task prompts, and logs all stay on your machine. The two outbound destinations are the ones you'd expect: `claude.ai` (for usage checks, with your cookie) and Anthropic's API (whatever `claude -p` sends as part of running your tasks — prompts and any files it reads, same as using Claude Code directly). See [Data storage](#data-storage).
+> **Nothing is uploaded to the author and there is no telemetry.** The session
+> token, usage history, task prompts, and logs stay on your machine. Outbound
+> traffic goes to ChatGPT only for the built-in usage backend and to OpenAI
+> through the Codex CLI while running queued tasks. See [Data storage](#data-storage).
 
 ---
 
 ## Why
 
-If you're on a Claude Max plan, your token allotment refills every five hours regardless of whether you used the previous bucket. Pure on-demand usage leaves a lot on the table. queue-up-for-claude lets you stage work asynchronously and only burns it when you have unused budget about to expire — turning idle plan capacity into shipped code.
+Token windows refill whether or not you used the previous bucket. Pure
+on-demand usage leaves capacity idle. queue-up-for-codex lets you stage work
+asynchronously and burn it when unused budget is close to reset.
 
-The runner is also a structured way to give a Claude Code subprocess a stable identity per project (who it is, what the project is, what it's allowed to do, what it remembers from prior sessions) without you re-typing context each time.
-This is a local personal automation tool. It is not affiliated with or supported
-by OpenAI. It does not call an OpenAI usage API directly; you provide a local
-command that reports usage as JSON.
+The runner is also a structured way to give a Codex subprocess a stable identity
+per project: who it is, what the project is, what it is allowed to do, and what
+it remembers from prior sessions.
 
 ---
 
@@ -69,7 +80,15 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 cp .env.example .env && chmod 0600 .env
+
+# Option A: built-in ChatGPT Codex usage backend
+./codex-queue set-chatgpt-token
+printf '\nCODEX_QUEUE_USAGE_BACKEND=codex_http\n' >> .env
+
+# Option B: local command usage backend
 # set CODEX_QUEUE_USAGE_COMMAND=...; see docs/usage-checking.md
+
+./codex-queue check-usage
 
 ./codex-queue init ~/projects/my-app
 ./codex-queue add ~/projects/my-app "Add input validation to /signup" --level committer
@@ -78,7 +97,9 @@ codex-queue-web
 # open http://localhost:51002
 ```
 
-The usage command must print:
+For the built-in backend, paste the `__Secure-next-auth.session-token` cookie
+from `https://chatgpt.com` when `set-chatgpt-token` prompts. For the local
+command backend, your command must print:
 
 ```json
 {"used_pct": 71, "reset_minutes": 58}
@@ -90,13 +111,45 @@ The usage command must print:
 
 | Area | What | Read more |
 |---|---|---|
-| Usage-aware runner | Chilling/burning state machine, reset-anchored scheduling, local command usage provider | [runner-state-machine.md](docs/runner-state-machine.md), [usage-checking.md](docs/usage-checking.md) |
+| Usage-aware runner | Chilling/burning state machine, reset-anchored scheduling, command or ChatGPT Codex HTTP usage provider | [runner-state-machine.md](docs/runner-state-machine.md), [usage-checking.md](docs/usage-checking.md) |
 | Per-project agent identity | `.agent/` directory with AGENT/CONTEXT/BEHAVIOR + rolling memory, checkpoints, briefings, proposed memory edits | [agent-context.md](docs/agent-context.md) |
 | Capability boundaries | Four levels compiled into ALLOWED / NOT ALLOWED sections of injected `CODEX.md`; per-task overrides | [agent-context.md](docs/agent-context.md#capability-levels) |
 | Web dashboard | FastAPI + Alpine.js SPA at `localhost:51002` | [web-dashboard.md](docs/web-dashboard.md) |
 | Auth + remote access | Optional password gate with brute-force protection | [auth-and-remote-access.md](docs/auth-and-remote-access.md) |
-| CLI | `codex-queue {init,add,ls,status,next,context,logs,retry,remove,compile,run,...}` | [cli.md](docs/cli.md) |
+| CLI | Full guide for `codex-queue` commands and adding new commands | [cli.md](docs/cli.md) |
 | Crash recovery | Per-task lock files, dead-PID detection, `CODEX.md` backup restoration, durable reset anchor | [runner-state-machine.md](docs/runner-state-machine.md#crash-recovery) |
+
+---
+
+## Command guide
+
+Use `./codex-queue <command>` from the repo root, or `codex-queue <command>`
+after installing the package.
+Note: `./codex-queue` automatically runs the commands from the venv directory.
+
+| Command | Usage | What it does |
+|---|---|---|
+| `add` | `./codex-queue add <project_dir> "<prompt>" [options]` | Creates a pending task for a project prompt. |
+| `begin` | `./codex-queue begin <task_id>` | Moves a pending task to `running/` for manual recovery. |
+| `check-usage` | `./codex-queue check-usage` | Runs the configured usage backend once. |
+| `compile` | `./codex-queue compile <project_dir> --level craftsman` | Writes a project `CODEX.md` for interactive Codex use. |
+| `context` | `./codex-queue context <task_id>` | Prints the full generated task context. |
+| `discover-usage-url` | `./codex-queue discover-usage-url` | Finds likely ChatGPT Codex usage API URLs. |
+| `done` | `./codex-queue done <task_id>` | Moves a running task to `done/`. |
+| `fail` | `./codex-queue fail <task_id> --detail "reason"` | Moves a running task to `failed/`. |
+| `init` | `./codex-queue init <project_dir>` | Scaffolds `.agent/` context files in a project. |
+| `logs` | `./codex-queue logs [--task <id>] [--date YYYY-MM-DD]` | Prints queue logs. |
+| `ls` | `./codex-queue ls [--status pending]` | Lists tasks across queue folders. |
+| `next` | `./codex-queue next [--json-out]` | Shows the next runnable task. |
+| `remove` | `./codex-queue remove <task_id> [--force]` | Deletes a task from the queue. |
+| `retry` | `./codex-queue retry <task_id>` | Moves a failed or unfinished task back to `pending/`. |
+| `run` | `./codex-queue run [--once]` | Starts the runner or drains ready tasks once. |
+| `set-chatgpt-token` | `./codex-queue set-chatgpt-token [--stdin]` | Stores the ChatGPT session token for usage checks. |
+| `stall` | `./codex-queue stall <task_id> --reason checkpoint --detail "..."` | Moves a running task to `unfinished/`. |
+| `status` | `./codex-queue status` | Prints task counts by status. |
+
+See [docs/cli.md](docs/cli.md) for command options and the contributor guide
+for adding new commands.
 
 ---
 
@@ -126,37 +179,18 @@ queue-up-for-codex/
 
 ## Data storage
 
-<<<<<<< HEAD
-**This is unofficial software.** It is not affiliated with, endorsed by, or supported by Anthropic PBC.
+- Usage history is appended to `usage_history.csv` in the project directory.
+- Task prompts and per-task Codex output live in `queue/` and `logs/`.
+- `.env` is loaded into a private in-process store and is not exported into Codex subprocesses.
+- The ChatGPT session token for the `codex_http` backend lives in `.env` or
+  `~/.config/queue-worker/chatgpt_session_token` with mode `0600`.
+- Strings sent to the dashboard pass through a redactor for likely API keys and email addresses.
 
-queue-up-for-claude reads your Claude.ai plan usage by calling the same web API endpoints the claude.ai UI uses, authenticated with your `sessionKey` browser cookie.
-
-**This may violate Anthropic's Terms of Service.** By using this software you accept that:
-
-- Anthropic may block, restrict, or terminate your access at any time.
-- Your Claude account could be affected by using unofficial usage-checking methods.
-- Token usage from automated `claude -p` runs counts against your normal plan limits.
-- **You use this at your own risk.** The author assumes no liability.
-
-### Data storage
-
-- The session key lives in `.env` (gitignored, `0600` recommended), in `~/.config/queue-worker/session_key` (mode `0600`), or in process env. **Never transmitted anywhere except claude.ai.**
-- Usage history is appended to `usage_history.csv` in the project directory — timestamps + percentages only, no prompts or chat content.
-- Task prompts and per-task `claude -p` output live in `queue/` and `logs/`.
-- Strings sent to the dashboard pass through a redactor that strips `sk-ant-...` keys and email addresses (defense in depth).
-- **No data is sent to the author and there is no telemetry.** Outbound traffic only goes to `claude.ai` (usage check, authenticated with your cookie) and Anthropic's API (whatever `claude -p` sends while running your tasks — prompts and the contents of any files it reads, same as using Claude Code directly).
-- The dashboard's file browser API is **not path-scoped**: it can list and read any file the process user can read. Treat it as you would a remote shell — bind to loopback / Tailscale, set a password, do not expose publicly.
-
-See [docs/security.md](docs/security.md) for the full security model and known limitations (notably: the file-browser API is not sandboxed — fine for loopback / Tailscale, not safe to expose publicly without scoping).
+See [docs/security.md](docs/security.md) for the full security model and known
+limitations.
 
 ---
 
 ## License
-=======
-- Usage history is appended to `usage_history.csv` in the project directory.
-- Task prompts and per-task Codex output live in `queue/` and `logs/`.
-- `.env` is loaded into a private in-process store and is not exported into Codex subprocesses.
-- Strings sent to the dashboard pass through a redactor for likely API keys and email addresses.
->>>>>>> 160762e (editing for codex)
 
 MIT — see [LICENSE](LICENSE).
