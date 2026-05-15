@@ -7,6 +7,8 @@ State machine:
               usage check after each task finish;
               after the currently-running task finishes past the deadline,
               transition back to chilling.
+  reset     → spawn a lightweight `codex exec` hello ping shortly after the
+              predicted reset so the next 5h usage window opens on schedule.
 
 Reset anchor: a `next_reset_at` epoch is tracked across cycles. The canonical
 re-anchor is the post_reset check at T+5min. Other checks (manual, hourly
@@ -35,9 +37,11 @@ from .config import PROJECT_ROOT
 from .task import Task, augment_task, now_iso, parse_task
 from .lock import recover_stale_locks, release_task_lock, RUNNING_DIR
 from .queue_ops import (get_pending_tasks, resolve_run_order, move_task,
-                        augment_stall, begin_task)
+                        augment_stall, begin_task,
+                        DEFAULT_USAGE_WINDOW_MINUTES,
+                        NEXT_SESSION_BUFFER_SECONDS)
 from .injector import cleanup_codex_md, BackupInfo
-from .executor import execute_task, ExecuteResult
+from .executor import execute_task, execute_reset_ping, ExecuteResult
 from .logger import TaskLogger
 from .usage_check import BURN_USAGE_THRESHOLD_PCT, BURN_RESET_WINDOW_MIN
 
@@ -51,6 +55,7 @@ CheckKind = Literal[
     'hourly', 'pre_reset', 'post_reset', 'manual', 'cold_start', 'fallback',
     't_minus_60',
 ]
+ScheduledKind = CheckKind | Literal['reset_ping']
 _ActionKind = Literal['reanchor', 'clamp', 'skip']
 
 
@@ -84,7 +89,7 @@ _loop_wake = threading.Event()         # set on state change → wakes the runne
 
 # Pending one-shot reset-anchored checks, guarded by _state_lock. Always read/
 # written through the helpers below; never touch the list outside the lock.
-_scheduled_checks: list[tuple[float, CheckKind]] = []
+_scheduled_checks: list[tuple[float, ScheduledKind]] = []
 
 # Persistence — only the durable parts of RunnerState (anchor + cycle flags).
 # burn_until, last_check_*, scheduled_checks are transient and intentionally
@@ -223,19 +228,21 @@ def _persist_state_locked() -> None:
 # ── Scheduled-check queue (guarded by _state_lock) ──────────────────────────
 
 def _arm_scheduled_locked(predicted_reset_at: float) -> None:
-    """Replace pending entries with a fresh (T-60, T-10, T+5) trio.
+    """Replace pending entries with reset-anchored checks and reset ping.
 
     Slots due within SCHED_DUE_FLOOR_S of now are dropped — handles the
     cold-start edge where reset_minutes==0 would otherwise enqueue an
     already-past pre_reset. T-60 lands roughly at the same time the next
     HH:00 hourly tick would; the runner suppresses the hourly when an
-    anchored slot is within SUPPRESS_HOURLY_WINDOW_S so we don't double-fire.
+    anchored usage-check slot is within SUPPRESS_HOURLY_WINDOW_S so we don't
+    double-fire.
     """
     now = time.time()
     _scheduled_checks.clear()
     for offset, kind in (
         (-60 * 60, 't_minus_60'),
         (-10 * 60, 'pre_reset'),
+        (NEXT_SESSION_BUFFER_SECONDS, 'reset_ping'),
         (+5 * 60, 'post_reset'),
     ):
         due = predicted_reset_at + offset
@@ -244,7 +251,7 @@ def _arm_scheduled_locked(predicted_reset_at: float) -> None:
     _scheduled_checks.sort(key=lambda e: e[0])
 
 
-def _pop_due_scheduled(now: float) -> Optional[tuple[float, CheckKind]]:
+def _pop_due_scheduled(now: float) -> Optional[tuple[float, ScheduledKind]]:
     """Return the earliest entry with due ≤ now (and remove it), else None."""
     with _state_lock:
         if not _scheduled_checks:
@@ -274,7 +281,9 @@ def _hourly_suppressed(target_at: float, now: float) -> bool:
          data; firing again is a duplicate.
     """
     with _state_lock:
-        for due, _kind in _scheduled_checks:
+        for due, kind in _scheduled_checks:
+            if kind == 'reset_ping':
+                continue
             if abs(due - target_at) <= SUPPRESS_HOURLY_WINDOW_S:
                 return True
         last_check = _runner_state.last_check_at
@@ -283,7 +292,7 @@ def _hourly_suppressed(target_at: float, now: float) -> bool:
     return False
 
 
-def _requeue(entry: tuple[float, CheckKind]) -> None:
+def _requeue(entry: tuple[float, ScheduledKind]) -> None:
     """Push an entry back after a contention skip (do_usage_check returned False).
 
     If the contended check already re-anchored, the queue may have a fresh
@@ -378,6 +387,23 @@ def _process_queue(log: TaskLogger,
     log.info('queue drained or all blocked')
 
 
+def _run_reset_ping(log: TaskLogger,
+                    execute_lock: Optional[threading.Lock]) -> bool:
+    """Spawn the reset ping if no other Codex subprocess is running."""
+    acquired = False
+    if execute_lock:
+        acquired = execute_lock.acquire(blocking=False)
+        if not acquired:
+            log.info('reset ping: codex subprocess already running, retrying shortly')
+            return False
+    try:
+        execute_reset_ping(log)
+        return True
+    finally:
+        if acquired:
+            execute_lock.release()
+
+
 # ── Usage check ──────────────────────────────────────────────────────────────
 
 def _decide_anchor_action(snap: RunnerState, kind: CheckKind,
@@ -418,12 +444,19 @@ def _decide_anchor_action(snap: RunnerState, kind: CheckKind,
         return ('clamp', effective)
 
     # Normal sanity-band gate.
-    if effective in ('post_reset', 'manual', 'fallback'):
+    if effective == 'post_reset':
+        expected = snap.next_reset_at + DEFAULT_USAGE_WINDOW_MINUTES * 60
+        if abs(proposed - expected) <= ANCHOR_DRIFT_TOLERANCE_S:
+            return ('reanchor', effective)
         if abs(proposed - snap.next_reset_at) <= ANCHOR_DRIFT_TOLERANCE_S:
             return ('reanchor', effective)
-        # Out of band — log and skip. post_reset is canonical but a single
-        # wildly-different post_reset is more likely a parse hiccup than a
-        # real 60-min drift.
+        return ('skip', effective)
+
+    if effective in ('manual', 'fallback'):
+        if abs(proposed - snap.next_reset_at) <= ANCHOR_DRIFT_TOLERANCE_S:
+            return ('reanchor', effective)
+        # Out of band — log and skip. A single wildly-different proposal is
+        # more likely a parse hiccup than real reset drift.
         return ('skip', effective)
 
     # pre_reset: only re-anchor if post_reset hasn't already nailed it.
@@ -616,9 +649,9 @@ def do_usage_check(log: TaskLogger, kind: CheckKind = 'hourly') -> bool:
 
 # ── Clock-aligned scheduling ────────────────────────────────────────────────
 
-# Hourly base cadence: every check fires at HH:00. The reset-anchored T-10
-# pre_reset and T+5 post_reset checks are queued via _scheduled_checks and
-# fire whenever they come due, regardless of state (chilling or burning).
+# Hourly base cadence: every check fires at HH:00. Reset-anchored usage checks
+# and the hello reset ping are queued via _scheduled_checks and fire whenever
+# they come due, regardless of state (chilling or burning).
 USAGE_CHECK_MINUTE = 0
 
 
@@ -681,6 +714,10 @@ def start_runner(log: TaskLogger,
             entry = _pop_due_scheduled(now)
             if entry:
                 _due, sched_kind = entry
+                if sched_kind == 'reset_ping':
+                    if not _run_reset_ping(log, execute_lock):
+                        _requeue(entry)
+                    continue
                 ran = do_usage_check(log, kind=sched_kind)
                 if not ran:
                     _requeue(entry)

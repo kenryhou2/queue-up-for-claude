@@ -197,3 +197,12 @@ python -m pytest tests/
 ./codex-queue --help
 ./codex-queue <new-command> --help
 ```
+
+If the test environment has globally installed pytest plugins, or if a full
+suite run shows plugin-related import/configuration errors, rerun the suite
+with plugin autoload disabled so outside plugins cannot hide queue-up-for-codex
+failures:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/
+```

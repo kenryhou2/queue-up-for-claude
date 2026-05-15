@@ -10,6 +10,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional
 
+from .config import PROJECT_ROOT
 from .task import Task, augment_task, now_iso
 from .injector import build_codex_md, inject_codex_md, cleanup_codex_md, BackupInfo
 from .lock import acquire_task_lock, update_task_lock, release_task_lock
@@ -29,6 +30,17 @@ _ENV_BLOCKER_PATTERNS = [
     re.compile(r'sandbox (?:setup|wrapper) (?:error|layer)', re.IGNORECASE),
     re.compile(r'No MCP .*resources .*available .*fallback', re.IGNORECASE),
 ]
+_ENV_BLOCKER_SOURCE_LINE_PREFIXES = (
+    '+', '-', '>', '|',
+)
+_ENV_BLOCKER_PYTHON_CODE_PREFIXES = (
+    'assert ', 'return ', 'raise ', 'if ', 'elif ', 'for ', 'while ',
+    'def ', 'class ', 'with ', 'except ', 'detail =', 'source_line =',
+    're.compile(',
+)
+
+RESET_PING_PROMPT = 'hello'
+RESET_PING_TIMEOUT_SECONDS = 120
 
 
 def _codex_bin() -> str:
@@ -49,6 +61,23 @@ def _codex_exec_policy_args() -> list[str]:
     return ['--full-auto']
 
 
+def _detect_environment_blocker(line: str) -> Optional[str]:
+    """Return blocker detail for direct Codex output, ignoring quoted code."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if line[:1] in _ENV_BLOCKER_SOURCE_LINE_PREFIXES:
+        return None
+    if stripped.startswith(_ENV_BLOCKER_PYTHON_CODE_PREFIXES):
+        return None
+    if stripped.startswith(('r"', "r'", '"', "'")):
+        return None
+    for pat in _ENV_BLOCKER_PATTERNS:
+        if pat.search(stripped):
+            return stripped[:300]
+    return None
+
+
 @dataclass
 class ExecuteResult:
     status: str                        # 'done' | 'unfinished' | 'failed'
@@ -56,6 +85,37 @@ class ExecuteResult:
     stall_detail: Optional[str] = None
     duration_minutes: float = 0.0
     tokens_used: Optional[int] = None
+
+
+def execute_reset_ping(log: TaskLogger) -> ExecuteResult:
+    """Spawn a lightweight Codex instance to open the fresh usage window."""
+    start_time = time.monotonic()
+    log.info('reset ping: spawning codex hello')
+    cmd = [
+        _codex_bin(), 'exec',
+        *_codex_exec_policy_args(), '--skip-git-repo-check',
+        '-C', str(PROJECT_ROOT), RESET_PING_PROMPT,
+    ]
+    exit_code, timed_out, tokens_used, environment_blocker = _run_codex(
+        cmd=cmd, cwd=str(PROJECT_ROOT),
+        timeout_seconds=RESET_PING_TIMEOUT_SECONDS,
+        log_fn=lambda line: log.info(f'reset ping: {line}'),
+    )
+    duration = (time.monotonic() - start_time) / 60
+    if timed_out:
+        log.error('reset ping: timed out')
+        return ExecuteResult('unfinished', 'timeout',
+                             'Reset ping timed out.', duration, tokens_used)
+    if environment_blocker:
+        detail = f'codex environment blocker: {environment_blocker}'
+        log.error(f'reset ping: {detail}')
+        return ExecuteResult('failed', None, detail, duration, tokens_used)
+    if exit_code != 0:
+        detail = f'codex exited with code {exit_code}'
+        log.error(f'reset ping: {detail}')
+        return ExecuteResult('failed', None, detail, duration, tokens_used)
+    log.info('reset ping: done')
+    return ExecuteResult('done', tokens_used=tokens_used)
 
 
 def _run_codex(cmd: list[str], cwd: str,
@@ -99,10 +159,7 @@ def _run_codex(cmd: list[str], cwd: str,
             stripped = line.rstrip()
             log_fn(stripped)
             if environment_blocker[0] is None:
-                for pat in _ENV_BLOCKER_PATTERNS:
-                    if pat.search(stripped):
-                        environment_blocker[0] = stripped[:300]
-                        break
+                environment_blocker[0] = _detect_environment_blocker(stripped)
             for pat in _TOKEN_PATTERNS:
                 m = pat.search(stripped)
                 if m:
@@ -149,6 +206,18 @@ def _read_checkpoint(path: Path) -> dict:
             return yaml.safe_load(f) or {}
     except Exception:
         return {}
+
+
+def _matching_work_journals(agent_dir: Path, task_id: str, today: str) -> list[Path]:
+    journals = sorted((agent_dir / 'briefings').glob(f'{today}-*.md'))
+    task_line = f'task: {task_id}'
+    return [
+        journal for journal in journals
+        if task_line in (
+            line.strip()
+            for line in journal.read_text(encoding='utf-8').splitlines()
+        )
+    ]
 
 
 def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
@@ -271,9 +340,19 @@ def execute_task(task: Task, log: TaskLogger) -> ExecuteResult:
             return ExecuteResult('failed', None, detail, duration, tokens_used)
 
         # f) Success
-        briefing = agent_dir / 'briefings' / f'{datetime.now().strftime("%Y%m%d")}.md'
-        if not briefing.exists():
-            log.task(task.id, 'warning: agent did not write a briefing')
+        today = datetime.now().strftime('%Y%m%d')
+        journals = _matching_work_journals(agent_dir, task.id, today)
+        if not journals:
+            log.task(
+                task.id,
+                'warning: agent did not write a timestamped work journal for this task',
+            )
+        elif len(journals) > 1:
+            names = ', '.join(journal.name for journal in journals)
+            log.task(
+                task.id,
+                f'warning: multiple work journals found for this task: {names}',
+            )
         log.task(task.id, f'done ({duration:.1f}min)')
         _write_episodic(task, 'done', None, duration, tokens_used)
         return ExecuteResult('done', duration_minutes=duration, tokens_used=tokens_used)

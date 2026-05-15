@@ -1,9 +1,11 @@
 """codex-queue web dashboard — FastAPI server on localhost:51002."""
 
 import csv
+import re
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional
@@ -15,6 +17,7 @@ from pydantic import BaseModel, Field
 from . import auth
 from .config import (QUEUE_DIR, LOG_DIR, STATIC_DIR,
                      bootstrap as _bootstrap, get_logger as _log)
+from .queue_ops import NEXT_SESSION_BUFFER_SECONDS
 from .usage_check import USAGE_CSV
 
 
@@ -653,6 +656,35 @@ def api_run_once_status():
 
 # ── Routes: Usage history ────────────────────────────────────────────────────
 
+_RESET_PART_RE = re.compile(r'(\d+)\s*(hr|min|sec)')
+
+
+def _reset_seconds(text: str) -> Optional[int]:
+    matches = _RESET_PART_RE.findall(text)
+    if not matches:
+        return None
+    total = 0
+    for raw_value, unit in matches:
+        value = int(raw_value)
+        if unit == 'hr':
+            total += value * 3600
+        elif unit == 'min':
+            total += value * 60
+        else:
+            total += value
+    return total
+
+
+def _reset_ping_at(row_time: str, resets_in: str) -> Optional[str]:
+    seconds = _reset_seconds(resets_in)
+    if seconds is None:
+        return None
+    checked_at = datetime.strptime(row_time, '%Y-%m-%d %H:%M:%S')
+    target = checked_at + timedelta(
+        seconds=seconds + NEXT_SESSION_BUFFER_SECONDS,
+    )
+    return target.isoformat(timespec='seconds')
+
 @app.get("/api/usage-history")
 def api_usage_history():
     if not USAGE_CSV.exists():
@@ -667,9 +699,12 @@ def api_usage_history():
                 pct = int(row[1].strip().rstrip('%'))
             except ValueError:
                 pct = None
+            row_time = row[0].strip()
+            resets_in = row[2].strip()
             rows.append({
-                'datetime': row[0].strip(), 'usage_pct': pct,
-                'resets_in': row[2].strip(),
+                'datetime': row_time, 'usage_pct': pct,
+                'resets_in': resets_in,
+                'reset_ping_at': _reset_ping_at(row_time, resets_in),
                 'status': row[3].strip() if len(row) > 3 else '',
             })
     return rows

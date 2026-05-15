@@ -1,5 +1,6 @@
 import os
 import json
+import shlex
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -142,26 +143,50 @@ def build_reference_section(agent_dir: Path) -> str:
 
 def build_output_conventions(task: Task, agent_dir: Path) -> str:
     today = datetime.now().strftime('%Y%m%d')
-    briefing_path = agent_dir / 'briefings' / f'{today}.md'
+    journal_path = agent_dir / 'briefings' / f'{today}-HH-MM-SS.md'
     checkpoint_path = agent_dir / 'checkpoints' / f'{today}-HHMMSS.yaml'
     proposed_path = agent_dir / 'proposed' / f'semantic-{today}-HHMMSS.md'
     dryrun_path = agent_dir / 'dry-run' / today
+    queue_add_command = (
+        f'cd {shlex.quote(str(QW_ROOT))} && ./codex-queue add '
+        f'{shlex.quote(task.resolved_dir)} "<task prompt>" --level {task.level}'
+    )
 
     lines = [
         '## Output conventions — always follow these',
         '',
-        f'**1. Briefing (mandatory)**: Your final action MUST be writing `{briefing_path}`.',
-        '   Do not exit without it. Format:',
+        '**1. Work journal (mandatory)**:',
+        f'   Write exactly one task journal at `{journal_path}` (use actual timestamp and create directories).',
+        '   This MUST be your final filesystem write before exiting.',
+        '   The filename pattern is `YYYYMMDD-HH-MM-SS.md`.',
+        '   Do not write a date-only briefing file such as `YYYYMMDD.md`.',
+        '   This does not apply to hello reset tasks.',
+        '   Format:',
         '   ```',
-        '   # Briefing — YYYYMMDD',
+        '   # Work Journal — YYYYMMDD-HH-MM-SS',
         '   task: <task_id>',
-        '   status: done | partial | stalled',
-        '   files_changed: <n>',
-        '   commits: <n or none>',
         '',
-        '   ## What I did',
-        '   ## What I learned',
-        '   ## Needs your attention',
+        '   ## Summary',
+        '   <short summary of tasks performed>',
+        '',
+        '   ## Major Changes',
+        '   <files, commands, or behavior changed in this task>',
+        '',
+        '   ## Security Risks Or Bugs',
+        '   <potential security risks or bugs, or "None observed.">',
+        '',
+        '   ## Failures',
+        '   <commands, tests, or checks that failed, or "None.">',
+        '',
+        '   ## Proposed Next Tasks',
+        '   1. <improvement and why it should happen next>',
+        '      ```bash',
+        f'      {queue_add_command}',
+        '      ```',
+        '   2. <improvement and why it should happen next>',
+        '      ```bash',
+        f'      {queue_add_command}',
+        '      ```',
         '   ```',
         '',
         '**2. Checkpoint (when you hit a decision boundary)**:',
@@ -185,7 +210,7 @@ def build_output_conventions(task: Task, agent_dir: Path) -> str:
         lines += [
             '**4. DRY RUN MODE**: Do NOT apply any changes.',
             f'   Write all proposed changes as unified diffs to `{dryrun_path}/`.',
-            '   Include a summary in the briefing. Then write the briefing and halt.',
+            '   Include a summary in the work journal. Then write the journal and halt.',
             '',
         ]
 

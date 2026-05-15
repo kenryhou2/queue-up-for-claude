@@ -50,6 +50,16 @@ def test_get_env_falls_back_to_dotenv(monkeypatch):
         config._DOTENV.pop('CODEX_QUEUE_USAGE_COMMAND', None)
 
 
+def test_subprocess_env_strips_chatgpt_session_token(monkeypatch):
+    monkeypatch.setenv('CODEX_QUEUE_CHATGPT_SESSION_TOKEN', 'secret-token')
+    monkeypatch.setenv('CODEX_QUEUE_USAGE_COMMAND', 'usage-helper')
+
+    env = config.subprocess_env()
+
+    assert 'CODEX_QUEUE_CHATGPT_SESSION_TOKEN' not in env
+    assert 'CODEX_QUEUE_USAGE_COMMAND' not in env
+
+
 def test_load_dotenv_refuses_loose_perms(tmp_path, monkeypatch, capsys):
     """0644 .env containing secrets must be refused, not warned and loaded."""
     env_file = tmp_path / '.env'

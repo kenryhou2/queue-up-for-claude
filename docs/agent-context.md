@@ -47,10 +47,18 @@ Codex is instructed to write:
 
 | Output | Path |
 |---|---|
-| Briefing | `.agent/briefings/YYYYMMDD.md` |
+| Work journal | `.agent/briefings/YYYYMMDD-HH-MM-SS.md` |
 | Checkpoint | `.agent/checkpoints/YYYYMMDD-HHMMSS.yaml` |
 | Proposed memory | `.agent/proposed/semantic-YYYYMMDD-HHMMSS.md` |
 | Dry-run diffs | `.agent/dry-run/YYYYMMDD/` |
+
+The per-task work journal is the only briefing file a normal task should
+write. It includes a short summary, major changes, potential security risks or
+bugs, failures, and at least two numbered proposed follow-up tasks explaining
+why each should happen next. Each proposed task also includes a concrete
+`cd <queue_repo> && ./codex-queue add <project_dir> "<prompt>"` command,
+matching the README command syntax. The work journal is skipped for the
+lightweight `hello` reset ping.
 
 If a checkpoint appears during execution, the task moves to `unfinished/`.
 Answer by editing `checkpoint_answer` in the task YAML, then run

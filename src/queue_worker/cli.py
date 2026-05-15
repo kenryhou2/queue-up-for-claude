@@ -21,7 +21,8 @@ def run(once):
     """Start the runner.
 
     Default mode: chilling with clock-aligned usage checks at every HH:00
-    plus reset-anchored T-60 / T-10 / T+5 checks. When usage shows
+    plus reset-anchored T-60 / T-10 / T+5 checks and a hello reset ping.
+    When usage shows
     >=30% remaining AND <70 minutes to reset, transitions to burning and
     processes tasks until the reset time. During burning, a usage check
     runs after each task finishes.

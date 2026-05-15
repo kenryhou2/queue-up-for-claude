@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from queue_worker.config import bootstrap
@@ -101,6 +102,73 @@ def test_resume_task_uses_codex_exec_resume(monkeypatch, tmp_path):
     assert captured['cwd'] == task.resolved_dir
 
 
+def test_success_checks_for_timestamped_work_journal(monkeypatch, tmp_path):
+    _patch_locks(monkeypatch, tmp_path)
+
+    def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
+        today = datetime.now().strftime('%Y%m%d')
+        journal = Path(cwd) / '.agent' / 'briefings' / f'{today}-12-34-56.md'
+        journal.write_text('# Work Journal\ntask: task-1\n', encoding='utf-8')
+        return 0, False, None, None
+
+    monkeypatch.setattr(executor, '_run_codex', fake_run)
+    log = _Log()
+    result = executor.execute_task(_task(tmp_path), log)
+
+    assert result.status == 'done'
+    assert (
+        'task-1',
+        'warning: agent did not write a timestamped work journal for this task',
+    ) not in log.lines
+
+
+def test_success_warns_when_timestamped_journal_has_wrong_task_id(monkeypatch, tmp_path):
+    _patch_locks(monkeypatch, tmp_path)
+
+    def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
+        today = datetime.now().strftime('%Y%m%d')
+        journal = Path(cwd) / '.agent' / 'briefings' / f'{today}-12-34-56.md'
+        journal.write_text('# Work Journal\ntask: task-10\n', encoding='utf-8')
+        return 0, False, None, None
+
+    monkeypatch.setattr(executor, '_run_codex', fake_run)
+    log = _Log()
+    result = executor.execute_task(_task(tmp_path), log)
+
+    assert result.status == 'done'
+    assert (
+        'task-1',
+        'warning: agent did not write a timestamped work journal for this task',
+    ) in log.lines
+
+
+def test_success_warns_when_multiple_matching_work_journals_exist(monkeypatch, tmp_path):
+    _patch_locks(monkeypatch, tmp_path)
+
+    def fake_run(cmd, cwd, timeout_seconds, log_fn, lock_path=None):
+        today = datetime.now().strftime('%Y%m%d')
+        briefings = Path(cwd) / '.agent' / 'briefings'
+        (briefings / f'{today}-12-34-56.md').write_text(
+            '# Work Journal\ntask: task-1\n', encoding='utf-8'
+        )
+        (briefings / f'{today}-12-35-56.md').write_text(
+            '# Work Journal\ntask: task-1\n', encoding='utf-8'
+        )
+        return 0, False, None, None
+
+    monkeypatch.setattr(executor, '_run_codex', fake_run)
+    log = _Log()
+    result = executor.execute_task(_task(tmp_path), log)
+
+    assert result.status == 'done'
+    assert (
+        'task-1',
+        'warning: multiple work journals found for this task: '
+        f'{datetime.now().strftime("%Y%m%d")}-12-34-56.md, '
+        f'{datetime.now().strftime("%Y%m%d")}-12-35-56.md',
+    ) in log.lines
+
+
 def test_codex_md_original_is_restored_on_failure(monkeypatch, tmp_path):
     _patch_locks(monkeypatch, tmp_path)
 
@@ -149,3 +217,29 @@ def test_codex_environment_blocker_fails_even_with_zero_exit(monkeypatch, tmp_pa
 
     assert result.status == 'failed'
     assert 'environment blocker' in result.stall_detail
+
+
+def test_environment_blocker_detector_ignores_diff_regex_lines():
+    source_line = (
+        "+    re.compile(r'bwrap: .*Failed RTM_NEWADDR: Operation not permitted', "
+        're.IGNORECASE),'
+    )
+
+    assert executor._detect_environment_blocker(source_line) is None
+
+
+def test_environment_blocker_detector_ignores_python_string_lines():
+    source_line = (
+        "        return 0, False, 4105, "
+        "'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'"
+    )
+
+    assert executor._detect_environment_blocker(source_line) is None
+
+
+def test_environment_blocker_detector_flags_direct_error_line():
+    detail = executor._detect_environment_blocker(
+        'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'
+    )
+
+    assert detail == 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'

@@ -21,7 +21,7 @@ CAP_ALLOWED_TEXT: dict[str, str] = {
     'write_agent_memory':  'Write to .agent/memory/episodic.jsonl',
     'write_agent_proposed':'Propose memory edits to .agent/proposed/',
     'write_agent_direct':  'Directly edit .agent/memory/semantic.md or procedural.md',
-    'write_briefing':      'Write .agent/briefings/YYYYMMDD.md (mandatory)',
+    'write_briefing':      'Write .agent/briefings/YYYYMMDD-HH-MM-SS.md work journal (mandatory)',
     'write_checkpoint':    'Write .agent/checkpoints/TIMESTAMP.yaml and halt',
     'write_dryrun':        'Write proposed changes to .agent/dry-run/YYYYMMDD/',
 }

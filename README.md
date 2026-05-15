@@ -45,7 +45,7 @@ Two states: **chilling** (default) and **burning** (active).
 
 ```
               +-------------+  hourly + reset-anchored checks
-              |  CHILLING   |  (HH:00 + T-60 / T-10 / T+5)
+              |  CHILLING   |  (HH:00 + T-60 / T-10 / T+5 + hello ping)
               +------+------+ 
                      |  remaining >= 30% AND reset < 70min
               +------v------+
@@ -69,6 +69,15 @@ For each task the runner:
 ---
 
 ## Quick start
+
+### Starting the server
+
+```
+cd /home/hkou/LLMsandbox/codex/queue-up-for-claude
+python3 -m venv .venv
+source .venv/bin/activate
+codex-queue-web  
+```
 
 Requires **Python 3.11+** and **Codex CLI** installed and authenticated.
 

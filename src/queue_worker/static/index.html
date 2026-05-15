@@ -74,6 +74,10 @@ label { font-size: 12px; color: var(--text2); display: block; margin-bottom: 4px
 .state-chilling { background: #1e3a5f; color: var(--blue); }
 .state-burning { background: #3d2e0a; color: var(--amber); }
 .state-meta { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.6; }
+.usage-alert { background: #3d2e0a; border: 1px solid var(--amber); border-radius: 8px;
+               color: var(--text); font-size: 13px; line-height: 1.5; margin: 12px 0;
+               padding: 12px 14px; }
+.usage-alert code { background: rgba(0,0,0,0.25); border-radius: 4px; padding: 1px 4px; }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--text2); font-size: 11px; text-transform: uppercase;
@@ -259,6 +263,9 @@ tr:hover { background: var(--bg2); cursor: pointer; }
           </template>
           <template x-if="status.runner?.last_check_at">
             <div>Last check: <span x-text="fmtFullTime(status.runner.last_check_at * 1000)"></span> · usage <span x-text="(status.runner.last_check_pct ?? '?') + '%'"></span> · status: <span x-text="status.runner.last_check_status || 'N/A'"></span></div>
+          </template>
+          <template x-if="nextResetPingDueAt()">
+            <div>Hello reset ping: <span x-text="fmtFullTime(nextResetPingDueAt() * 1000)"></span> (in <span x-text="fmtCountdown((nextResetPingDueAt() * 1000) - Date.now())"></span>)</div>
           </template>
           <template x-if="status.runner?.last_check_error">
             <div style="color: var(--red)">Last error: <span x-text="status.runner.last_check_error"></span></div>
@@ -712,6 +719,9 @@ tr:hover { background: var(--bg2); cursor: pointer; }
   <template x-if="view === 'usage'">
     <div>
       <h2>Usage History</h2>
+      <template x-if="usageAuthHelp()">
+        <div class="usage-alert" x-html="usageAuthHelp()"></div>
+      </template>
       <div style="display: flex; gap: 6px; margin: 12px 0">
         <template x-for="r in ['today','week','month','all']">
           <button :class="{ active: usageRange === r }" @click="usageRange = r; $nextTick(() => renderUsageChart())" x-text="r === 'all' ? 'All' : r === 'month' ? 'This Month' : r === 'week' ? 'This Week' : 'Today'"></button>
@@ -846,6 +856,25 @@ function app() {
       if (!this.resume.ok) return 'error';
       if (!this.resume.last_user_message) return 'empty';
       return 'loaded';
+    },
+
+    nextResetPingDueAt() {
+      const checks = this.status.runner?.scheduled_checks || [];
+      const pings = checks
+        .filter((c) => c.kind === 'reset_ping' && c.due_at)
+        .sort((a, b) => a.due_at - b.due_at);
+      return pings[0]?.due_at || null;
+    },
+
+    usageAuthHelp() {
+      const code = this.status.runner?.last_check_error_code;
+      if (code === 'chatgpt_session_token_invalid') {
+        return 'ChatGPT rejected the stored session token. Log in at <code>chatgpt.com</code>, copy the <code>__Secure-next-auth.session-token</code> cookie, store it with <code>./codex-queue set-chatgpt-token</code>, then run <code>./codex-queue check-usage</code>.';
+      }
+      if (code === 'chatgpt_session_token_missing') {
+        return 'ChatGPT usage checks need a session token. Store the <code>__Secure-next-auth.session-token</code> cookie with <code>./codex-queue set-chatgpt-token</code> and keep <code>CODEX_QUEUE_USAGE_BACKEND=codex_http</code> in <code>.env</code>.';
+      }
+      return '';
     },
 
     go(v) { this.view = v; this.showContext = false; this.contextText = '';
@@ -1296,7 +1325,15 @@ function app() {
       const pad = { top: 20, right: 20, bottom: 40, left: 45 };
       const cw = W - pad.left - pad.right, ch = H - pad.top - pad.bottom;
       const tMin = this.usageRange === 'all' && data.length ? data[0]._ts : rangeStart;
-      const tMax = this.usageRange === 'all' && data.length ? data[data.length-1]._ts : rangeEnd;
+      const resetMarkers = this.usageRange === 'today' ? data
+        .filter(d => d.reset_ping_at)
+        .map(d => new Date(d.reset_ping_at).getTime())
+        .filter(ts => !isNaN(ts))
+        .sort((a, b) => a - b)
+        .filter((ts, i, arr) => i === 0 || ts - arr[i - 1] > 5 * 60000) : [];
+      const markerMax = resetMarkers.length ? resetMarkers[resetMarkers.length - 1] : null;
+      const dataMax = this.usageRange === 'all' && data.length ? data[data.length-1]._ts : rangeEnd;
+      const tMax = markerMax === null ? dataMax : Math.max(dataMax, markerMax);
       const tRange = tMax - tMin || 1;
       const timeX = (ts) => pad.left + ((ts - tMin) / tRange) * cw;
 
@@ -1323,6 +1360,26 @@ function app() {
         ctx.save(); ctx.translate(x, H - 5); ctx.rotate(-0.4);
         ctx.fillText(label, 0, 0); ctx.restore();
       }
+
+      // Reset ping markers
+      resetMarkers
+        .filter(ts => ts >= tMin && ts <= tMax)
+        .forEach((ts) => {
+          const x = timeX(ts);
+          ctx.save();
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, pad.top);
+          ctx.lineTo(x, pad.top + ch);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = '11px system-ui';
+          ctx.fillText('reset', Math.min(x + 5, W - pad.right - 28), pad.top + 12);
+          ctx.restore();
+        });
 
       if (data.length === 0) {
         ctx.fillStyle = '#8b8fa3'; ctx.font = '13px system-ui';

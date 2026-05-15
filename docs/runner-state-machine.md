@@ -24,6 +24,10 @@ Checks run at:
 Only one usage check can run at a time. The lock prevents CSV row interleaving
 and overlapping usage-provider commands.
 
+The scheduler also spawns a lightweight `codex exec` with the prompt `hello`
+one minute after the predicted reset, serialized against task execution, so a
+fresh usage window opens even when no queued task is ready at that moment.
+
 ## Anchors
 
 Successful checks derive a predicted reset timestamp from `finished_at` plus
